@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>预警管理 - 酒店异常人员实时监控识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #f0f2f5; }
+        .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 22px; font-weight: 500; }
+        .nav { display: flex; gap: 20px; }
+        .nav a { color: rgba(255,255,255,0.85); text-decoration: none; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover, .nav a.active { background: rgba(255,255,255,0.15); color: white; }
+        .container { padding: 30px 40px; }
+        .card { background: white; border-radius: 8px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .filters { display: flex; gap: 16px; margin-bottom: 20px; align-items: center; }
+        .filter-btn { padding: 8px 20px; border: 1px solid #ddd; background: white; border-radius: 20px; cursor: pointer; font-size: 14px; }
+        .filter-btn.active { background: #1a237e; color: white; border-color: #1a237e; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f5f5f5; font-weight: 500; color: #666; font-size: 13px; text-transform: uppercase; }
+        td { font-size: 14px; color: #333; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+        .badge.pending { background: #ffebee; color: #c62828; }
+        .badge.handled { background: #e8f5e9; color: #2e7d32; }
+        .btn { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #1a237e; color: white; }
+        .btn-danger { background: #c62828; color: white; }
+        .btn-success { background: #2e7d32; color: white; }
+        .screenshot-thumb { width: 80px; height: 60px; object-fit: cover; border-radius: 4px; cursor: pointer; }
+        .empty { text-align: center; padding: 40px; color: #999; }
+        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-content { max-width: 80%; max-height: 80%; }
+        .modal img { max-width: 100%; max-height: 80vh; border-radius: 8px; }
+        .modal .close { position: absolute; top: 20px; right: 20px; background: white; border: none; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; font-size: 20px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ 酒店异常人员实时监控识别系统 - 预警管理</h1>
+        <div class="nav">
+            <a href="/">📊 仪表板</a>
+            <a href="/register">📝 入住登记</a>
+            <a href="/monitor">📹 实时监控</a>
+            <a href="/alerts" class="active">⚠️ 预警管理</a>
+            <a href="/persons">👥 人员管理</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="card">
+            <div class="filters">
+                <button class="filter-btn active" onclick="filterAlerts('all')">全部</button>
+                <button class="filter-btn" onclick="filterAlerts('0')">未处理</button>
+                <button class="filter-btn" onclick="filterAlerts('1')">已处置</button>
+            </div>
+
+            {% if alerts %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>预警时间</th>
+                        <th>摄像头</th>
+                        <th>相似度</th>
+                        <th>截图</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for alert in alerts %}
+                    <tr id="alert_{{ alert.log_id }}">
+                        <td>{{ alert.alert_time }}</td>
+                        <td>{{ alert.camera_id }}</td>
+                        <td>{{ "%.3f"|format(alert.similarity or 0) }}</td>
+                        <td>
+                            {% if alert.screenshot_path %}
+                            <img src="/output/alert_screenshots/{{ alert.screenshot_path.split('/')[-1] }}"
+                                 class="screenshot-thumb"
+                                 onclick="viewScreenshot('{{ alert.screenshot_path }}')"
+                                 alt="预警截图">
+                            {% else %}
+                            无截图
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if alert.handle_status == 0 %}
+                            <span class="badge pending">未处理</span>
+                            {% else %}
+                            <span class="badge handled">已处置</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if alert.handle_status == 0 %}
+                            <button class="btn btn-success" onclick="handleAlert({{ alert.log_id }}, 1)">✓ 标记处置</button>
+                            {% endif %}
+                            <button class="btn btn-danger" onclick="deleteAlert({{ alert.log_id }})">🗑 删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">暂无预警记录</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="modal" id="imageModal" onclick="closeModal()">
+        <button class="close">✕</button>
+        <div class="modal-content">
+            <img id="modalImage" src="" alt="预警截图">
+        </div>
+    </div>
+
+    <script>
+        function filterAlerts(status) {
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            window.location.href = '/alerts' + (status !== 'all' ? '?status=' + status : '');
+        }
+
+        async function handleAlert(logId, status) {
+            try {
+                const response = await fetch('/api/alerts/' + logId + '/handle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: status })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    location.reload();
+                }
+            } catch (err) {
+                alert('操作失败: ' + err.message);
+            }
+        }
+
+        async function deleteAlert(logId) {
+            if (!confirm('确定删除此预警记录?')) return;
+            try {
+                const response = await fetch('/api/alerts/' + logId, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                if (result.success) {
+                    document.getElementById('alert_' + logId).remove();
+                }
+            } catch (err) {
+                alert('删除失败: ' + err.message);
+            }
+        }
+
+        function viewScreenshot(path) {
+            document.getElementById('modalImage').src = '/output/alert_screenshots/' + path.split('/')[-1];
+            document.getElementById('imageModal').style.display = 'flex';
+        }
+
+        function closeModal() {
+            document.getElementById('imageModal').style.display = 'none';
+        }
+    </script>
+</body>
+</html>

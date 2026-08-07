@@ -1,0 +1,14 @@
+# 酒店行人检测数据集配置文件
+# 数据集名称: hotel_det
+# 生成时间: 自动生成
+
+path: C:\D\Myproject\YOLOv8+ResNet50\Hotel_Exp\dataset\det
+
+train: train/images
+val: val/images
+test: test/images
+
+names:
+  0: person
+
+nc: 1

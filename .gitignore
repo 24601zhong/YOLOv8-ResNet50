@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+env/
+.venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 模型权重（大文件）
+*.pt
+*.pth
+*.onnx
+*.weights
+*.engine
+
+# 数据集（大文件）
+dataset/det/hotel_img/images/*.jpg
+dataset/det/hotel_img/labels/*.txt
+!dataset/det/hotel_img/images/.gitkeep
+!dataset/det/hotel_img/labels/.gitkeep
+
+# 输出文件
+output/alert_screenshots/*.jpg
+output/alert_screenshots/*.png
+output/*.json
+!output/.gitkeep
+
+# 日志
+*.log
+logs/
+
+# 测试视频
+test_video/*.mp4
+test_video/*.avi
+test_video/*.mov
+
+# 数据库配置
+.env
+config.local.py
+
+# 临时文件
+*.tmp
+*.bak
+*.orig

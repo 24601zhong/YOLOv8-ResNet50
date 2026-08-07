@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>入住登记 - 酒店异常人员实时监控识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #f0f2f5; }
+        .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 22px; font-weight: 500; }
+        .nav { display: flex; gap: 20px; }
+        .nav a { color: rgba(255,255,255,0.85); text-decoration: none; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover, .nav a.active { background: rgba(255,255,255,0.15); color: white; }
+        .container { padding: 30px 40px; max-width: 1000px; margin: 0 auto; }
+        .card { background: white; border-radius: 8px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .section-title { font-size: 20px; font-weight: 500; margin-bottom: 24px; color: #333; border-bottom: 2px solid #1a237e; padding-bottom: 10px; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #555; font-weight: 500; }
+        .form-group input { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .form-group input:focus { outline: none; border-color: #1a237e; }
+        .camera-section { background: #f5f5f5; border-radius: 8px; padding: 20px; margin-top: 24px; }
+        .camera-container { position: relative; width: 100%; max-width: 640px; margin: 0 auto; }
+        #video { width: 100%; border-radius: 8px; background: #000; }
+        #canvas { display: none; }
+        .camera-controls { display: flex; justify-content: center; gap: 16px; margin-top: 16px; }
+        .btn { padding: 10px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; }
+        .btn-primary { background: #1a237e; color: white; }
+        .btn-primary:hover { background: #283593; }
+        .btn-danger { background: #c62828; color: white; }
+        .btn-danger:hover { background: #d32f2f; }
+        .btn-success { background: #2e7d32; color: white; }
+        .btn-success:hover { background: #388e3c; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .message { padding: 14px 20px; border-radius: 4px; margin-top: 20px; display: none; }
+        .message.success { background: #e8f5e9; color: #2e7d32; display: block; }
+        .message.error { background: #ffebee; color: #c62828; display: block; }
+        .preview-container { text-align: center; margin-top: 16px; }
+        .preview-container img { max-width: 300px; border-radius: 4px; border: 2px solid #ddd; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ 酒店异常人员实时监控识别系统</h1>
+        <div class="nav">
+            <a href="/">📊 仪表板</a>
+            <a href="/register" class="active">📝 入住登记</a>
+            <a href="/monitor">📹 实时监控</a>
+            <a href="/alerts">⚠️ 预警管理</a>
+            <a href="/persons">👥 人员管理</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="card">
+            <div class="section-title">入住登记</div>
+
+            <form id="registerForm">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>姓名 *</label>
+                        <input type="text" id="name" name="name" required placeholder="请输入住客姓名">
+                    </div>
+                    <div class="form-group">
+                        <label>身份证号 *</label>
+                        <input type="text" id="id_card" name="id_card" required maxlength="18" placeholder="18位身份证号">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>房间号 *</label>
+                    <input type="text" id="room_num" name="room_num" required placeholder="如: 8001">
+                </div>
+
+                <div class="camera-section">
+                    <div style="text-align:center; margin-bottom:16px; color:#555; font-weight:500;">
+                        📸 人脸抓拍 (可选 - 用于身份特征录入)
+                    </div>
+                    <div class="camera-container">
+                        <video id="video" autoplay></video>
+                        <canvas id="canvas" width="640" height="480"></canvas>
+                    </div>
+                    <div class="camera-controls">
+                        <button type="button" class="btn btn-primary" onclick="startCamera()">开启摄像头</button>
+                        <button type="button" class="btn btn-danger" onclick="capturePhoto()">📸 拍照</button>
+                        <button type="button" class="btn btn-primary" onclick="stopCamera()">关闭摄像头</button>
+                    </div>
+                    <div class="preview-container" id="previewContainer"></div>
+                </div>
+
+                <div style="text-align:center; margin-top:24px;">
+                    <button type="submit" class="btn btn-success" style="padding:12px 48px; font-size:16px;">
+                        ✅ 提交登记
+                    </button>
+                </div>
+
+                <div class="message" id="message"></div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let stream = null;
+        let capturedImage = null;
+
+        async function startCamera() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+                document.getElementById('video').srcObject = stream;
+            } catch (err) {
+                alert('无法访问摄像头: ' + err.message);
+            }
+        }
+
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+            document.getElementById('video').srcObject = null;
+        }
+
+        function capturePhoto() {
+            if (!stream) {
+                alert('请先开启摄像头');
+                return;
+            }
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, 640, 480);
+            capturedImage = canvas.toDataURL('image/jpeg', 0.8);
+
+            document.getElementById('previewContainer').innerHTML =
+                '<img src="' + capturedImage + '" alt="抓拍预览">';
+        }
+
+        document.getElementById('registerForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = {
+                name: document.getElementById('name').value.trim(),
+                id_card: document.getElementById('id_card').value.trim(),
+                room_num: document.getElementById('room_num').value.trim(),
+                face_image: capturedImage || ''
+            };
+
+            const msg = document.getElementById('message');
+            msg.className = 'message';
+            msg.style.display = 'none';
+
+            try {
+                const response = await fetch('/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    msg.className = 'message success';
+                    msg.textContent = '✅ ' + result.message + (result.feature_extracted ? ' (特征已提取)' : '');
+                    document.getElementById('registerForm').reset();
+                    document.getElementById('previewContainer').innerHTML = '';
+                    capturedImage = null;
+                } else {
+                    msg.className = 'message error';
+                    msg.textContent = '❌ ' + result.message;
+                }
+            } catch (err) {
+                msg.className = 'message error';
+                msg.textContent = '❌ 请求失败: ' + err.message;
+            }
+        });
+    </script>
+</body>
+</html>
