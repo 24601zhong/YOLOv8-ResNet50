@@ -1,0 +1,32 @@
+# 模型权重文件 (过大)
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# 训练输出
+train_output/
+runs/
+
+# 数据集
+dataset/
+Market-1501*/
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 日志
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# 系统
+.DS_Store
+Thumbs.db

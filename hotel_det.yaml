@@ -1,0 +1,7 @@
+path: C:/D/Myproject/Data-processing/Hotel_Model_Train/dataset/det/hotel_dataset
+train: images/train
+val: images/val
+test: images/test
+nc: 1
+names:
+  0: person
