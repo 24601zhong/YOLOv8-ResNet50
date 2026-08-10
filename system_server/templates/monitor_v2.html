@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时监控中心 - 酒店异常人员识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0a0e27;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .top-bar {
+            background: linear-gradient(90deg, #1a1f3a 0%, #2d3561 100%);
+            padding: 15px 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #00d4ff;
+            box-shadow: 0 4px 20px rgba(0, 212, 255, 0.2);
+        }
+        .top-bar h1 {
+            font-size: 1.4em;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: 2px;
+        }
+        .nav-links { display: flex; gap: 20px; }
+        .nav-links a {
+            color: #b0b8d4;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            transition: all 0.3s;
+            font-size: 0.9em;
+        }
+        .nav-links a:hover, .nav-links a.active {
+            background: rgba(0, 212, 255, 0.15);
+            color: #00d4ff;
+        }
+        .nav-links a.active { border: 1px solid #00d4ff; }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 280px;
+            gap: 20px;
+            padding: 20px;
+            height: calc(100vh - 70px);
+        }
+
+        .video-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            overflow-y: auto;
+            align-content: start;
+        }
+
+        .video-card {
+            background: #1a1f3a;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #2a3050;
+            transition: all 0.3s;
+            position: relative;
+        }
+        .video-card:hover {
+            border-color: #00d4ff;
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+        }
+        .video-card-header {
+            background: #0f1425;
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #2a3050;
+        }
+        .camera-name {
+            font-weight: 600;
+            color: #00d4ff;
+            font-size: 0.95em;
+        }
+        .status-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #00ff88;
+            box-shadow: 0 0 8px #00ff88;
+            animation: pulse 2s infinite;
+        }
+        .status-dot.offline {
+            background: #ff4444;
+            box-shadow: 0 0 8px #ff4444;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .video-feed {
+            width: 100%;
+            height: 240px;
+            object-fit: cover;
+            background: #000;
+            display: block;
+        }
+        .video-feed.no-signal::after {
+            content: '无信号';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff4444;
+            font-size: 1.2em;
+        }
+        .video-footer {
+            padding: 8px 12px;
+            background: #0f1425;
+            font-size: 0.8em;
+            color: #8892b0;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto;
+        }
+
+        .panel {
+            background: #1a1f3a;
+            border-radius: 12px;
+            padding: 18px;
+            border: 1px solid #2a3050;
+        }
+        .panel-title {
+            font-size: 0.95em;
+            color: #00d4ff;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #2a3050;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .panel-title::before {
+            content: '';
+            width: 4px; height: 18px;
+            background: linear-gradient(to bottom, #00d4ff, #00ff88);
+            border-radius: 2px;
+        }
+
+        .fps-display {
+            text-align: center;
+            padding: 15px;
+        }
+        .fps-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .fps-label {
+            font-size: 0.85em;
+            color: #8892b0;
+            margin-top: 5px;
+        }
+        .fps-meter {
+            width: 100%;
+            height: 8px;
+            background: #0f1425;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .fps-meter-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff88, #00d4ff);
+            transition: width 0.5s;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(42, 48, 80, 0.5);
+        }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-label { color: #8892b0; font-size: 0.85em; }
+        .stat-value {
+            font-weight: bold;
+            color: #fff;
+            font-size: 0.95em;
+        }
+        .stat-value.alert { color: #ff4444; }
+        .stat-value.success { color: #00ff88; }
+
+        .alert-list {
+            max-height: 250px;
+            overflow-y: auto;
+        }
+        .alert-item {
+            background: rgba(255, 68, 68, 0.1);
+            border-left: 3px solid #ff4444;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            font-size: 0.82em;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-10px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .alert-item .alert-time {
+            color: #8892b0;
+            font-size: 0.85em;
+        }
+        .alert-item .alert-cam {
+            font-weight: bold;
+            color: #ff6666;
+            margin: 3px 0;
+        }
+        .alert-item .alert-similarity {
+            color: #ff9944;
+        }
+        .no-alerts {
+            text-align: center;
+            color: #8892b0;
+            padding: 20px;
+            font-size: 0.85em;
+        }
+
+        .camera-selector {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .cam-btn {
+            padding: 6px 12px;
+            background: #0f1425;
+            border: 1px solid #2a3050;
+            color: #b0b8d4;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8em;
+            transition: all 0.3s;
+        }
+        .cam-btn.active {
+            background: rgba(0, 212, 255, 0.2);
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        .color-legend {
+            display: flex;
+            gap: 15px;
+            padding: 10px;
+            background: #0f1425;
+            border-radius: 6px;
+            font-size: 0.8em;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .legend-color {
+            width: 14px; height: 14px;
+            border-radius: 3px;
+        }
+        .legend-color.green { background: #00ff88; }
+        .legend-color.red { background: #ff4444; }
+
+        .fullscreen-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            border: none;
+            color: #fff;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .video-card:hover .fullscreen-btn { opacity: 1; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f1425; }
+        ::-webkit-scrollbar-thumb { background: #2a3050; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3a4070; }
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <h1>🛡️ 酒店异常人员实时监控识别系统</h1>
+        <div class="nav-links">
+            <a href="/">🏠 仪表板</a>
+            <a href="/register">📝 入住登记</a>
+            <a href="/monitor" class="active">📹 实时监控</a>
+            <a href="/alerts">🚨 预警记录</a>
+            <a href="/persons">👥 人员管理</a>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <!-- 视频网格 -->
+        <div class="video-grid">
+            {% for cam in cameras %}
+            <div class="video-card" id="cam-card-{{ cam.id }}">
+                <button class="fullscreen-btn" onclick="toggleFullscreen('cam-card-{{ cam.id }}')">⛶ 全屏</button>
+                <div class="video-card-header">
+                    <span class="camera-name">{{ cam.name }}</span>
+                    <span class="status-dot" id="status-{{ cam.id }}"></span>
+                </div>
+                <div style="position: relative;">
+                    <img src="{{ cam.stream }}" class="video-feed" id="feed-{{ cam.id }}"
+                         onerror="document.getElementById('feed-{{ cam.id }}').parentElement.classList.add('no-signal'); document.getElementById('status-{{ cam.id }}').classList.add('offline');"
+                         alt="{{ cam.name }}">
+                </div>
+                <div class="video-footer">
+                    <span>ID: {{ cam.id }}</span>
+                    <span id="time-{{ cam.id }}">--:--:--</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- 侧边栏 -->
+        <div class="sidebar">
+            <!-- FPS & 系统状态 -->
+            <div class="panel">
+                <div class="panel-title">系统性能</div>
+                <div class="fps-display">
+                    <div class="fps-value" id="fps-display">--</div>
+                    <div class="fps-label">FPS (每秒帧数)</div>
+                    <div class="fps-meter">
+                        <div class="fps-meter-fill" id="fps-meter" style="width: 0%;"></div>
+                    </div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <div class="stat-row">
+                        <span class="stat-label">在线摄像头</span>
+                        <span class="stat-value" id="online-cams">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">今日检测次数</span>
+                        <span class="stat-value" id="total-detections">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">已识别人员</span>
+                        <span class="stat-value success" id="matched-persons">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 检测说明 -->
+            <div class="panel">
+                <div class="panel-title">检测图例</div>
+                <div class="color-legend">
+                    <div class="legend-item">
+                        <div class="legend-color green"></div>
+                        <span>已登记人员</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color red"></div>
+                        <span>异常人员</span>
+                    </div>
+                </div>
+                <div style="margin-top: 12px; font-size: 0.8em; color: #8892b0; line-height: 1.6;">
+                    <p>✅ 绿色框表示已登记在库人员</p>
+                    <p>⚠️ 红色框表示未登记或可疑人员</p>
+                    <p>🔔 红色框将触发预警通知</p>
+                </div>
+            </div>
+
+            <!-- 实时预警 -->
+            <div class="panel">
+                <div class="panel-title">实时预警</div>
+                <div class="alert-list" id="alert-list">
+                    <div class="no-alerts">暂无预警记录</div>
+                </div>
+            </div>
+
+            <!-- 快捷操作 -->
+            <div class="panel">
+                <div class="panel-title">快捷操作</div>
+                <button onclick="refreshAllStreams()" style="width:100%; padding:10px; background:#00d4ff; color:#0a0e27; border:none; border-radius:6px; cursor:pointer; font-weight:600; margin-bottom:8px;">
+                    🔄 刷新所有视频流
+                </button>
+                <button onclick="clearAlerts()" style="width:100%; padding:10px; background:#2a3050; color:#e0e0e0; border:none; border-radius:6px; cursor:pointer;">
+                    🗑️ 清空预警列表
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 刷新视频流
+        function refreshAllStreams() {
+            document.querySelectorAll('.video-feed').forEach(img => {
+                const src = img.src.split('?')[0];
+                img.src = src + '?t=' + Date.now();
+            });
+        }
+
+        // 全屏
+        function toggleFullscreen(cardId) {
+            const el = document.getElementById(cardId);
+            if (!document.fullscreenElement) {
+                el.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // 清空预警列表
+        function clearAlerts() {
+            document.getElementById('alert-list').innerHTML = '<div class="no-alerts">暂无预警记录</div>';
+        }
+
+        // 更新时间
+        function updateTimes() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('zh-CN');
+            document.querySelectorAll('[id^="time-"]').forEach(el => {
+                el.textContent = timeStr;
+            });
+        }
+
+        // 加载初始预警
+        async function loadAlerts() {
+            try {
+                const res = await fetch('/api/alerts?limit=10');
+                if (res.ok) {
+                    const alerts = await res.json();
+                    if (alerts && alerts.length > 0) {
+                        const list = document.getElementById('alert-list');
+                        list.innerHTML = '';
+                        alerts.forEach(a => {
+                            const item = document.createElement('div');
+                            item.className = 'alert-item';
+                            item.innerHTML = `
+                                <div class="alert-time">${a.alert_time || '--'}</div>
+                                <div class="alert-cam">📷 ${a.camera_id}</div>
+                                <div>相似度: <span class="alert-similarity">${(a.similarity || 0).toFixed(3)}</span></div>
+                            `;
+                            list.appendChild(item);
+                        });
+                    }
+                }
+            } catch(e) {}
+        }
+
+        // 更新系统状态
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/stats');
+                if (res.ok) {
+                    const data = await res.json();
+                    const sys = data.system || {};
+                    
+                    document.getElementById('fps-display').textContent = 
+                        sys.fps ? sys.fps.toFixed(1) : '--';
+                    
+                    const fpsPct = Math.min((sys.fps || 0) / 30 * 100, 100);
+                    document.getElementById('fps-meter').style.width = fpsPct + '%';
+                    
+                    document.getElementById('online-cams').textContent = 
+                        sys.online_cameras || 0;
+                    document.getElementById('total-detections').textContent = 
+                        sys.total_detections || 0;
+                    document.getElementById('matched-persons').textContent = 
+                        sys.matched_persons || 0;
+                }
+            } catch(e) {}
+        }
+
+        // 定时更新
+        setInterval(updateTimes, 1000);
+        setInterval(updateStatus, 1000);
+        setInterval(loadAlerts, 5000);
+
+        // 初始化
+        updateTimes();
+        loadAlerts();
+        updateStatus();
+
+        // 30秒后刷新视频流（清除可能的卡顿）
+        setTimeout(refreshAllStreams, 30000);
+    </script>
+</body>
+</html>

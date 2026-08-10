@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时监控 - 酒店异常人员实时监控识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #0a0a0a; color: #eee; }
+        .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 16px 40px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 20px; font-weight: 500; }
+        .nav { display: flex; gap: 16px; }
+        .nav a { color: rgba(255,255,255,0.85); text-decoration: none; padding: 8px 14px; border-radius: 4px; font-size: 14px; }
+        .nav a:hover, .nav a.active { background: rgba(255,255,255,0.15); color: white; }
+        .container { padding: 20px; }
+        .monitor-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+        .camera-card { background: #1a1a1a; border-radius: 8px; overflow: hidden; border: 2px solid #333; }
+        .camera-card.alert { border-color: #c62828; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100% { box-shadow: 0 0 10px #c62828; } 50% { box-shadow: 0 0 25px #c62828; } }
+        .camera-header { background: #222; padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; }
+        .camera-header .name { font-weight: 500; font-size: 14px; }
+        .camera-header .status { font-size: 12px; padding: 3px 10px; border-radius: 10px; }
+        .status.online { background: #2e7d32; color: white; }
+        .status.offline { background: #666; color: #ccc; }
+        .status.alert { background: #c62828; color: white; }
+        .video-container { position: relative; background: #000; aspect-ratio: 16/9; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .video-placeholder { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; color: #666; }
+        .info-bar { background: #222; padding: 8px 16px; display: flex; justify-content: space-between; font-size: 12px; color: #999; }
+        .info-bar .alert-info { color: #c62828; font-weight: 500; }
+        .controls { display: flex; justify-content: center; gap: 16px; margin-top: 20px; padding: 16px; background: #1a1a1a; border-radius: 8px; }
+        .btn { padding: 10px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; color: white; }
+        .btn-primary { background: #1a237e; }
+        .btn-primary:hover { background: #283593; }
+        .btn-danger { background: #c62828; }
+        .btn-success { background: #2e7d32; }
+        .log-panel { background: #1a1a1a; border-radius: 8px; padding: 16px; margin-top: 16px; max-height: 200px; overflow-y: auto; }
+        .log-panel h3 { font-size: 14px; margin-bottom: 12px; color: #aaa; }
+        .log-entry { padding: 6px 12px; margin-bottom: 4px; background: #222; border-radius: 4px; font-size: 13px; font-family: monospace; }
+        .log-entry.alert { background: #3d1f1f; color: #ff6b6b; }
+        .log-entry.normal { background: #1f3d1f; color: #6bff6b; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ 酒店异常人员实时监控识别系统 - 实时监控</h1>
+        <div class="nav">
+            <a href="/">📊 仪表板</a>
+            <a href="/register">📝 入住登记</a>
+            <a href="/monitor" class="active">📹 实时监控</a>
+            <a href="/alerts">⚠️ 预警管理</a>
+            <a href="/persons">👥 人员管理</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="monitor-grid" id="monitorGrid">
+            {% for camera in cameras %}
+            <div class="camera-card" id="camera_{{ camera.id }}">
+                <div class="camera-header">
+                    <span class="name">📹 {{ camera.name }} ({{ camera.id }})</span>
+                    <span class="status online" id="status_{{ camera.id }}">● 在线</span>
+                </div>
+                <div class="video-container">
+                    <video id="video_{{ camera.id }}" autoplay muted></video>
+                    <div class="video-placeholder" id="placeholder_{{ camera.id }}">等待视频接入...</div>
+                </div>
+                <div class="info-bar">
+                    <span id="time_{{ camera.id }}">--:--:--</span>
+                    <span id="info_{{ camera.id }}">待机中...</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-success" onclick="startAllCameras()">▶️ 开启全部摄像头</button>
+            <button class="btn btn-danger" onclick="stopAllCameras()">⏹️ 关闭全部摄像头</button>
+            <button class="btn btn-primary" onclick="runDetection()">🔍 执行检测</button>
+        </div>
+
+        <div class="log-panel">
+            <h3>📋 实时检测日志</h3>
+            <div id="logContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        const cameras = {{ cameras|tojson }};
+        let mediaStreams = {};
+
+        async function startAllCameras() {
+            for (const cam of cameras) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    document.getElementById('video_' + cam.id).srcObject = stream;
+                    document.getElementById('placeholder_' + cam.id).style.display = 'none';
+                    mediaStreams[cam.id] = stream;
+                    log('📹 ' + cam.name + ' 已启动', 'normal');
+                } catch (err) {
+                    log('❌ ' + cam.name + ' 启动失败: ' + err.message, 'alert');
+                }
+            }
+        }
+
+        function stopAllCameras() {
+            for (const [id, stream] of Object.entries(mediaStreams)) {
+                stream.getTracks().forEach(t => t.stop());
+                document.getElementById('video_' + id).srcObject = null;
+                document.getElementById('placeholder_' + id).style.display = 'flex';
+            }
+            mediaStreams = {};
+            log('⏹️ 所有摄像头已关闭', 'normal');
+        }
+
+        async function runDetection() {
+            for (const cam of cameras) {
+                const videoEl = document.getElementById('video_' + cam.id);
+                if (!videoEl.srcObject) continue;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = 640;
+                canvas.height = 480;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(videoEl, 0, 0, 640, 480);
+
+                const frameData = canvas.toDataURL('image/jpeg', 0.8);
+
+                try {
+                    const response = await fetch('/api/detect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            camera_id: cam.id,
+                            frame: frameData
+                        })
+                    });
+                    const result = await response.json();
+                    handleDetectionResult(cam, result);
+                } catch (err) {
+                    log('❌ ' + cam.name + ' 检测请求失败', 'alert');
+                }
+            }
+        }
+
+        function handleDetectionResult(cam, result) {
+            const info = document.getElementById('info_' + cam.id);
+            const status = document.getElementById('status_' + cam.id);
+            const card = document.getElementById('camera_' + cam.id);
+
+            if (result.type === 'alert') {
+                info.innerHTML = '<span style="color:#ff6b6b;">⚠️ 异常人员! 相似度: ' + result.similarity.toFixed(2) + '</span>';
+                status.className = 'status alert';
+                status.textContent = '⚠️ 预警';
+                card.classList.add('alert');
+                log('🚨 ' + cam.name + ' 检测到异常人员 (相似度: ' + result.similarity.toFixed(2) + ')', 'alert');
+            } else if (result.type === 'normal') {
+                info.innerHTML = '<span style="color:#6bff6b;">✔ 已登记: ' + (result.person?.name || '未知') + '</span>';
+                status.className = 'status online';
+                status.textContent = '● 正常';
+                card.classList.remove('alert');
+                log('✔ ' + cam.name + ' 识别为已登记住客: ' + (result.person?.name || ''), 'normal');
+            } else {
+                info.textContent = '未检测到人员';
+                status.className = 'status online';
+                status.textContent = '● 在线';
+                card.classList.remove('alert');
+            }
+        }
+
+        function log(message, type) {
+            const container = document.getElementById('logContainer');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + (type || '');
+            entry.textContent = '[' + time + '] ' + message;
+            container.insertBefore(entry, container.firstChild);
+
+            // 保留最近50条
+            while (container.children.length > 50) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        // 更新时间
+        setInterval(() => {
+            const now = new Date().toLocaleTimeString();
+            for (const cam of cameras) {
+                const el = document.getElementById('time_' + cam.id);
+                if (el) el.textContent = now;
+            }
+        }, 1000);
+
+        // 自动执行检测
+        setInterval(() => {
+            if (Object.keys(mediaStreams).length > 0) {
+                runDetection();
+            }
+        }, 3000);
+    </script>
+</body>
+</html>

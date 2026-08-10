@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>人员管理 - 酒店异常人员实时监控识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #f0f2f5; }
+        .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 22px; font-weight: 500; }
+        .nav { display: flex; gap: 20px; }
+        .nav a { color: rgba(255,255,255,0.85); text-decoration: none; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover, .nav a.active { background: rgba(255,255,255,0.15); color: white; }
+        .container { padding: 30px 40px; }
+        .card { background: white; border-radius: 8px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .search-bar { display: flex; gap: 12px; margin-bottom: 20px; }
+        .search-bar input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .search-bar input:focus { outline: none; border-color: #1a237e; }
+        .btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #1a237e; color: white; }
+        .btn-danger { background: #c62828; color: white; }
+        .btn-success { background: #2e7d32; color: white; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f5f5f5; font-weight: 500; color: #666; font-size: 13px; text-transform: uppercase; }
+        td { font-size: 14px; color: #333; }
+        .avatar { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
+        .avatar-placeholder { width: 48px; height: 48px; border-radius: 50%; background: #e0e0e0; display: flex; align-items: center; justify-content: center; color: #999; }
+        .empty { text-align: center; padding: 40px; color: #999; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+        .badge.checkin { background: #e3f2fd; color: #1565c0; }
+        .badge.checkout { background: #f5f5f5; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ 酒店异常人员实时监控识别系统 - 人员管理</h1>
+        <div class="nav">
+            <a href="/">📊 仪表板</a>
+            <a href="/register">📝 入住登记</a>
+            <a href="/monitor">📹 实时监控</a>
+            <a href="/alerts">⚠️ 预警管理</a>
+            <a href="/persons" class="active">👥 人员管理</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="card">
+            <form class="search-bar" method="get" action="/persons">
+                <input type="text" name="search" placeholder="搜索姓名/身份证/房号..." value="{{ search }}">
+                <button type="submit" class="btn btn-primary">🔍 搜索</button>
+                {% if search %}
+                <a href="/persons" class="btn btn-danger">✕ 清除</a>
+                {% endif %}
+            </form>
+
+            {% if persons %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>头像</th>
+                        <th>姓名</th>
+                        <th>身份证号</th>
+                        <th>房间号</th>
+                        <th>入住时间</th>
+                        <th>离店时间</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for person in persons %}
+                    <tr>
+                        <td>
+                            {% if person.face_img_path %}
+                            <img src="{{ person.face_img_path }}" class="avatar" alt="">
+                            {% else %}
+                            <div class="avatar-placeholder">👤</div>
+                            {% endif %}
+                        </td>
+                        <td>{{ person.name }}</td>
+                        <td>{{ person.id_card[:6] }}********{{ person.id_card[-4:] }}</td>
+                        <td>{{ person.room_num }}</td>
+                        <td>{{ person.check_in_time }}</td>
+                        <td>{{ person.check_out_time or '—' }}</td>
+                        <td>
+                            {% if person.check_out_time %}
+                            <span class="badge checkout">已离店</span>
+                            {% else %}
+                            <span class="badge checkin">在店</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if not person.check_out_time %}
+                            <button class="btn btn-success" onclick="checkout({{ person.id }})">🏨 办理离店</button>
+                            {% endif %}
+                            <button class="btn btn-danger" onclick="deletePerson({{ person.id }})">🗑 删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">暂无人员数据</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        async function checkout(personId) {
+            if (!confirm('确定办理离店手续?')) return;
+            try {
+                const response = await fetch('/api/persons/' + personId + '/checkout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const result = await response.json();
+                if (result.success) {
+                    alert('✅ 离店手续办理成功');
+                    location.reload();
+                }
+            } catch (err) {
+                alert('操作失败: ' + err.message);
+            }
+        }
+
+        async function deletePerson(personId) {
+            if (!confirm('确定删除此人员记录? 相关特征数据也将被移除')) return;
+            try {
+                const response = await fetch('/api/persons/' + personId, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                if (result.success) {
+                    alert('✅ 删除成功');
+                    location.reload();
+                }
+            } catch (err) {
+                alert('删除失败: ' + err.message);
+            }
+        }
+    </script>
+</body>
+</html>
