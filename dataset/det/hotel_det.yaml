@@ -2,11 +2,11 @@
 # 数据集名称: hotel_det
 # 生成时间: 自动生成
 
-path: C:\D\Myproject\YOLOv8+ResNet50\Hotel_Exp\dataset\det
+path: C:\D\Myproject\Data-processing\Hotel_Model_Train\dataset\det\hotel_dataset
 
-train: train/images
-val: val/images
-test: test/images
+train: images/train
+val: images/val
+test: images/test
 
 names:
   0: person
