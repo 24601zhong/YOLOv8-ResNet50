@@ -1,6 +1,10 @@
 # 模型存档
 
-> 自动整理时间: 2026-08-12
+> 自动整理时间: 2026-08-13
+
+> 🏆 **最新最佳模型 (2026-08-13)**
+> - **ReID V3**（IBN-Net 两阶段）：MOT17 Rank-1 = **0.9875**（目标 > 0.9，✅ 达成）
+> - **YOLOv8s V5**：mAP50 = **0.7652**
 
 ## 命名规范
 
@@ -37,9 +41,41 @@
 | **mAP50** | **0.715** |
 | **状态** | ✅ 训练完成 |
 
+### 6. YOLOv8s_V5_HotelDet_mAP50-0765_ep60.pt
+| 项目 | 值 |
+|---|---|
+| **源文件** | `train_output/yolo_log/hotel_det_v5/weights/best.pt` |
+| **模型** | YOLOv8s (V5 均衡数据集版) |
+| **大小** | 22.5 MB |
+| **训练数据** | Hotel Detection Dataset v5 (单类 person, 均衡采样) |
+| **训练配置** | imgsz=640, 60 epochs |
+| **总轮次** | 60 epochs |
+| **mAP50** | **0.7652** |
+| **mAP50-95** | **0.5284** |
+| **Precision** | 0.6749 |
+| **Recall** | 0.8056 |
+| **状态** | ✅ 训练完成 (无 NaN) |
+
 ---
 
 ## ReID 重识别模型 (Person Re-Identification)
+
+### 7. IBNet_V3_MOT17_Rank1-0987_mAP-0846_ep40.pth 🏆
+| 项目 | 值 |
+|---|---|
+| **源文件** | `resnet50_reid_train/train_output/mot17_v3/best_mot17_v3.pth` |
+| **模型** | IBNetResNet50-a + CBAM + Dilated + GeM + BNNeck + ArcFace |
+| **大小** | 296 MB (含优化器状态) |
+| **训练数据** | Stage1: Market-1501 (751 IDs) → Stage2: MOT17 全7序列 (297 IDs) |
+| **输入分辨率** | 384×128 |
+| **训练配置** | 两阶段: AdamW + PK采样 + LabelSmoothingCE + BatchHardTriplet |
+| **总轮次** | Stage1: 80 ep / Stage2: 60 ep |
+| **最佳轮次** | Stage2 Epoch 40 |
+| **Rank-1** | **0.9875** ✅ (目标 > 0.9) |
+| **Rank-5 / Rank-10** | 0.9931 / 0.9962 |
+| **mAP** | **0.8463** |
+| **总参数** | 25,705,637 |
+| **状态** | ✅ 训练完成 (独立评估已确认) |
 
 ### 3. ResNet50_Market1501_TriLoss-0447_TrainAcc-0999_ep118.pth
 | 项目 | 值 |
@@ -105,3 +141,5 @@
 | 3 | ResNet50_Market1501_TriLoss-0447_TrainAcc-0999_ep118.pth | 99 MB | ReID | TriLoss=-0.447 |
 | 4 | ResNet50_MOT17Finetune_Rank1-0562_mAP-0763_Rank5-0997_ep4.pth | 95 MB | ReID | Rank-1=0.562 |
 | 5 | ResNet50_Combined974_Rank1-0392_mAP-0302_ep20.pth | 300 MB | ReID | Rank-1=0.392 |
+| 6 | YOLOv8s_V5_HotelDet_mAP50-0765_ep60.pt | 22.5 MB | 检测 | mAP50=0.765 |
+| 7 | IBNet_V3_MOT17_Rank1-0987_mAP-0846_ep40.pth 🏆 | 296 MB | ReID | Rank-1=0.9875 |

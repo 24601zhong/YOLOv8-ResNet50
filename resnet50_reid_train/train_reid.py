@@ -144,16 +144,16 @@ class ReIDDataset(Dataset):
 # 数据增强变换
 # ============================================================
 def get_train_transforms(height=256, width=128):
-    """训练数据增强（包含在线增强）"""
+    """训练数据增强（V3 优化：降低几何/颜色扰动强度，提升随机擦除）"""
     return T.Compose([
         T.Resize((height, width)),
         T.RandomHorizontalFlip(p=0.5),
-        T.RandomRotation(10),
-        T.ColorJitter(brightness=0.4, contrast=0.3),
-        T.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+        # ★ V3: 移除 RandomRotation(10) — 身体朝向是 ReID 关键线索
+        T.ColorJitter(brightness=0.2, contrast=0.15),  # ★ V3: 从 0.4/0.3 降低
+        T.RandomAffine(degrees=0, translate=(0.05, 0.05)),  # ★ V3: 从 (0.1,0.1) 降低
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        T.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3)),
+        T.RandomErasing(p=0.5, scale=(0.02, 0.2), ratio=(0.3, 3.3)),  # ★ V3: 从 p=0.3 提升
     ])
 
 

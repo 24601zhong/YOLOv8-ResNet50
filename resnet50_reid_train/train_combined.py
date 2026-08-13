@@ -692,16 +692,83 @@ def train_combined(config):
         label_smooth=config.get("label_smooth", 0.1),
     )
 
-    # ===== Phase 4: Training Loop =====
-    print(f"\n[Phase 4] Training ({num_epochs} epochs)...")
-    print("=" * 70)
-
+    # ===== Phase 3.5: Resume from checkpoint (if specified) =====
+    start_epoch = 1
+    resume_epoch = 0
     history = defaultdict(list)
     best_mot17_rank1 = 0.0
     best_epoch = 0
+    early_stop_counter = 0
+    resume_path = config.get("resume")
+
+    if resume_path:
+        print(f"\n[Phase 3.5] Resuming from checkpoint: {resume_path}")
+        if not Path(resume_path).exists():
+            print(f"  [ERROR] Checkpoint not found: {resume_path}")
+            sys.exit(1)
+
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+
+        # Restore model
+        model.load_state_dict(ckpt['model_state_dict'])
+        print(f"  Model state restored")
+
+        # Restore optimizer
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        print(f"  Optimizer state restored")
+
+        # Restore scheduler
+        if 'scheduler_state_dict' in ckpt:
+            try:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+                print(f"  Scheduler state restored (warmup epoch={scheduler.current_epoch})")
+            except Exception as e:
+                print(f"  [WARN] Scheduler state load failed: {e}, starting scheduler fresh")
+
+        # Restore AMP scaler
+        if 'scaler_state_dict' in ckpt and scaler is not None:
+            scaler.load_state_dict(ckpt['scaler_state_dict'])
+            print(f"  AMP scaler state restored")
+
+        # Restore best metrics
+        best_mot17_rank1 = ckpt.get('best_mot17_rank1', 0.0)
+        best_epoch = ckpt.get('epoch', 0)
+        resume_epoch = best_epoch
+        start_epoch = resume_epoch + 1
+        print(f"  Best MOT17 Rank-1 so far: {best_mot17_rank1:.4f} (epoch {best_epoch})")
+
+        # Restore history (for continued plotting)
+        if 'history' in ckpt and ckpt['history']:
+            for k, v in ckpt['history'].items():
+                history[k] = list(v)
+            print(f"  History restored ({len(history.keys())} metrics, "
+                  f"{len(history.get('train_loss', []))} epochs)")
+
+        # Early stop counter from checkpoint
+        early_stop_counter = ckpt.get('early_stop_counter', 0)
+
+        # Override num_epochs from checkpoint config if CLI didn't change it
+        if 'config' in ckpt:
+            ckpt_config = ckpt['config']
+            # Respect CLI overrides: only use checkpoint total epochs if CLI used default
+            if config.get('num_epochs') == 120:  # default not changed
+                config['num_epochs'] = ckpt_config.get('num_epochs', num_epochs)
+            num_epochs = config['num_epochs']
+
+        if start_epoch > num_epochs:
+            print(f"  [INFO] Checkpoint epoch ({resume_epoch}) >= target epochs ({num_epochs}). "
+                  f"Training already complete.")
+            sys.exit(0)
+
+        print(f"  Resuming from epoch {start_epoch} / {num_epochs}")
+        print(f"  Remaining epochs: {num_epochs - start_epoch + 1}")
+
+    # ===== Phase 4: Training Loop =====
+    print(f"\n[Phase 4] Training ({num_epochs} epochs, start={start_epoch})...")
+    print("=" * 70)
+
     best_model_path = output_dir / "best_combined_v2.pth"
     early_stop_patience = config.get("early_stop_patience", 15)
-    early_stop_counter = 0
     eval_retrieval_every = config.get("eval_retrieval_every", 5)
     log_file = output_dir / "training_log.txt"
 
@@ -727,7 +794,7 @@ def train_combined(config):
     log_and_print("-" * 107)
 
     epoch_start_time = time.time()
-    for epoch in range(1, num_epochs + 1):
+    for epoch in range(start_epoch, num_epochs + 1):
         t0 = time.time()
 
         # ---- Train ----
@@ -862,7 +929,9 @@ def train_combined(config):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict() if scaler else None,
                 'best_mot17_rank1': best_mot17_rank1,
+                'early_stop_counter': early_stop_counter,
                 'config': config,
             }
             torch.save(checkpoint, best_model_path)
@@ -876,7 +945,9 @@ def train_combined(config):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict() if scaler else None,
                 'best_mot17_rank1': best_mot17_rank1,
+                'early_stop_counter': early_stop_counter,
                 'config': config,
                 'history': dict(history),
             }, ckpt_path)
@@ -974,6 +1045,8 @@ if __name__ == "__main__":
     parser.add_argument("--no_amp", action="store_true", help="Disable AMP")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Resume from checkpoint path (e.g. checkpoint_epoch20.pth)")
 
     args = parser.parse_args()
 
@@ -998,6 +1071,7 @@ if __name__ == "__main__":
         "use_amp": not args.no_amp,
         "seed": args.seed,
         "device": args.device,
+        "resume": args.resume,
     }
 
     train_combined(config)
