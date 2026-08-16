@@ -19,6 +19,7 @@ import json
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+from urllib.parse import quote
 
 import cv2
 import torch
@@ -32,7 +33,9 @@ def build_rtsp_url(ip, port=554, username=None, password=None, path=''):
         path = '/' + path
     auth = ''
     if username:
-        auth = f"{username}:{password or ''}@"
+        # 账号/密码做百分号编码: 密码常含 @ : / $ 等, 未编码会破坏 URL 结构
+        # (例如密码 K9@fL3$pQ7 中的 @ 会被当成 user:pass@host 的分隔符)
+        auth = f"{quote(str(username), safe='')}:{quote(str(password or ''), safe='')}@"
     return f"rtsp://{auth}{ip}:{port}{path}"
 
 
@@ -90,10 +93,13 @@ class CameraStreamReader:
 
     def start(self):
         """启动读取线程"""
-        # RTSP 低延迟: FFMPEG 走 TCP + 关闭缓冲; 所有源限制内部缓冲为 1 帧
+        # RTSP 低延迟: FFMPEG 走 TCP + 关闭缓冲 + 5s 套接字超时
+        #   - stimeout 让"摄像头不可达/URL 错误"时快速失败(默认会卡 30s 才报错)
+        #   - probesize/analyzeduration 放宽到 1MB/1s: 原 32 字节/0 太小, 部分摄像头
+        #     无法解析出编码参数而打不开流, 但又不会引入明显延迟
         if self.stats['is_rtsp']:
             os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = \
-                'rtsp_transport;tcp|fflags;nobuffer|probesize;32|analyzeduration;0'
+                'rtsp_transport;tcp|stimeout;5000000|fflags;nobuffer|probesize;1000000|analyzeduration;1000000'
             try:
                 self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
             except Exception:

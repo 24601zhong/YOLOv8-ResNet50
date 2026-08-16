@@ -156,16 +156,21 @@ class HotelDatabase:
     # ========================================================
 
     def insert_alert(self, camera_id: str, screenshot_path: str,
-                     similarity: float, handle_status: int = 0) -> int:
+                     similarity: float, handle_status: int = 0,
+                     person_key: Optional[str] = None,
+                     feature_vec: Optional[str] = None,
+                     embedding_type: Optional[str] = None) -> int:
         """
         插入预警记录
         :return: 新记录ID
         """
         sql = """
-        INSERT INTO alert_log (alert_time, camera_id, screenshot_path, similarity, handle_status)
-        VALUES (NOW(), %s, %s, %s, %s)
+        INSERT INTO alert_log (alert_time, camera_id, screenshot_path, similarity, handle_status,
+                               person_key, feature_vec, embedding_type)
+        VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)
         """
-        return self._execute_insert(sql, (camera_id, screenshot_path, similarity, handle_status))
+        return self._execute_insert(sql, (camera_id, screenshot_path, similarity, handle_status,
+                                          person_key, feature_vec, embedding_type))
 
     def get_alert_by_id(self, log_id: int) -> Optional[Dict]:
         """根据ID查询预警"""
@@ -197,6 +202,25 @@ class HotelDatabase:
         """删除预警记录"""
         sql = "DELETE FROM alert_log WHERE log_id = %s"
         return self._execute(sql, (log_id,), fetch=False) > 0
+
+    def delete_all_alerts(self) -> int:
+        """一键清空所有预警记录, 返回删除行数"""
+        return self._execute("DELETE FROM alert_log", fetch=False)
+
+    def get_alerts_by_person_key(self, person_key: str) -> List[Dict]:
+        """查询同一异常人员 (person_key) 的全部预警截图记录"""
+        sql = "SELECT * FROM alert_log WHERE person_key = %s ORDER BY alert_time ASC"
+        return self._execute(sql, (person_key,))
+
+    def delete_alerts_by_person_key(self, person_key: str) -> bool:
+        """删除同一异常人员的全部预警记录"""
+        sql = "DELETE FROM alert_log WHERE person_key = %s"
+        return self._execute(sql, (person_key,), fetch=False) > 0
+
+    def mark_alerts_handled_by_person_key(self, person_key: str) -> bool:
+        """标记同一异常人员的全部预警为已处置"""
+        sql = "UPDATE alert_log SET handle_status = 1 WHERE person_key = %s"
+        return self._execute(sql, (person_key,), fetch=False) > 0
 
     def get_unhandled_count(self) -> int:
         """获取未处理预警数量"""
@@ -249,4 +273,36 @@ class HotelDatabase:
             return True
         except Exception as e:
             print(f"[ERROR] 数据库连接失败: {e}")
+            return False
+
+    def ensure_alert_schema(self) -> bool:
+        """
+        幂等迁移: 确保 alert_log 包含按人聚合所需列与索引。
+        MySQL 8 不支持 ADD COLUMN IF NOT EXISTS, 故先查 information_schema 再决定是否 ALTER。
+        """
+        try:
+            cols = {r['COLUMN_NAME'] for r in self._execute(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'alert_log'"
+            )}
+            additions = {
+                'person_key': "ALTER TABLE alert_log ADD COLUMN person_key VARCHAR(64) DEFAULT NULL",
+                'feature_vec': "ALTER TABLE alert_log ADD COLUMN feature_vec TEXT DEFAULT NULL",
+                'embedding_type': "ALTER TABLE alert_log ADD COLUMN embedding_type VARCHAR(8) DEFAULT NULL",
+            }
+            for col, sql in additions.items():
+                if col not in cols:
+                    self._execute(sql, fetch=False)
+                    print(f"[INFO] alert_log 新增列: {col}")
+
+            idx = self._execute(
+                "SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'alert_log' AND INDEX_NAME = 'idx_person_key'"
+            )
+            if idx and idx[0]['cnt'] == 0:
+                self._execute("ALTER TABLE alert_log ADD INDEX idx_person_key (person_key)", fetch=False)
+                print("[INFO] alert_log 新增索引: idx_person_key")
+            return True
+        except Exception as e:
+            print(f"[WARN] alert_log 表迁移失败 (可能表尚未创建): {e}")
             return False

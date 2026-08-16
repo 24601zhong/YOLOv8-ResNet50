@@ -39,7 +39,11 @@ CREATE TABLE alert_log (
   camera_id VARCHAR(30) NOT NULL COMMENT '摄像头点位编号',
   screenshot_path VARCHAR(255) COMMENT '预警截图路径',
   similarity FLOAT COMMENT '匹配相似度(0-1)',
-  handle_status TINYINT NOT NULL DEFAULT 0 COMMENT '处理状态: 0-未处理, 1-已处置'
+  handle_status TINYINT NOT NULL DEFAULT 0 COMMENT '处理状态: 0-未处理, 1-已处置',
+  person_key VARCHAR(64) DEFAULT NULL COMMENT '异常人员分组标识(按人聚类)',
+  feature_vec TEXT COMMENT '异常人员特征向量(JSON数组, 人脸512/ReID2048)',
+  embedding_type VARCHAR(8) DEFAULT NULL COMMENT '特征类型: face/reid',
+  INDEX idx_person_key (person_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='异常预警日志表';
 
 -- ========================================================

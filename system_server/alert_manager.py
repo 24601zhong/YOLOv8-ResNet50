@@ -29,7 +29,12 @@ class AlertManager:
     - 预警触发（弹窗 + 蜂鸣）
     - 截图保存
     - 日志写入
+    - 按人聚类（同一异常人员复用同一 person_key, 人脸优先 + ReID 兜底）
     """
+
+    # 同人判定余弦阈值 (特征已 L2 归一化, 点积即余弦)
+    FACE_CLUSTER_THRESHOLD = 0.5   # 人脸 512 维
+    REID_CLUSTER_THRESHOLD = 0.7   # ReID 2048 维
 
     def __init__(self, output_dir=None, db_config=None):
         """
@@ -80,13 +85,21 @@ class AlertManager:
 
         # 预警冷却（防止同一摄像头每帧都触发完整预警, 拖垮检测循环）
         self.alert_cooldown = 5.0  # 秒
-        self._last_alert_time = {}  # camera_id -> 上次触发时间戳
+        self._last_alert_time = {}  # (camera_id, person_key) -> 上次触发时间戳
+
+        # 按人聚类状态: person_key -> {'feature_vec': L2 归一化向量, 'feature_type': 'face'|'reid'}
+        self._clusters = {}
+        self._cluster_seq = 0  # 自增序号, 保证新 key 不重复
+
+        # 从已有预警记录重建聚类 (重启后同一人仍归入同一 person_key)
+        self._rebuild_clusters()
 
         print(f"[INFO] 预警管理器初始化完成")
         print(f"[INFO] 截图保存目录: {self.output_dir}")
 
     def trigger_alert(self, camera_id, frame, similarity,
-                      person_id=-1, person_info=None):
+                      person_id=-1, person_info=None,
+                      feature_vec=None, feature_type=None):
         """
         触发预警（完整流程）
         :param camera_id: 摄像头编号
@@ -94,13 +107,19 @@ class AlertManager:
         :param similarity: 匹配相似度
         :param person_id: 匹配人员ID（-1 表示未匹配）
         :param person_info: 人员信息
+        :param feature_vec: 原始特征向量 (人脸 512 / ReID 2048), 用于按人聚类与后续登记
+        :param feature_type: 'face' 或 'reid'
         :return: 预警记录字典
         """
-        # 预警冷却: 同一摄像头在冷却期内不重复触发, 避免"异常"帧每帧都写库/存图拖垮检测循环
+        # 按人聚类: 分配/复用 person_key (人脸优先 + ReID 兜底)
+        person_key = self._assign_person_key(feature_vec, feature_type)
+
+        # 预警冷却: 按 (摄像头, 人) 维度, 同人冷却期内不重复触发, 不同人各自立即触发
         now = time.time()
-        if now - self._last_alert_time.get(camera_id, 0) < self.alert_cooldown:
+        cooldown_key = (camera_id, person_key)
+        if now - self._last_alert_time.get(cooldown_key, 0) < self.alert_cooldown:
             return None
-        self._last_alert_time[camera_id] = now
+        self._last_alert_time[cooldown_key] = now
 
         alert_time = datetime.now()
 
@@ -117,7 +136,8 @@ class AlertManager:
 
         # Step 4: 写入数据库
         db_result = self._write_to_database(
-            camera_id, screenshot_path, similarity, alert_time
+            camera_id, screenshot_path, similarity, alert_time,
+            person_key, feature_vec, feature_type
         )
 
         # 组装预警记录
@@ -127,6 +147,7 @@ class AlertManager:
             'similarity': similarity,
             'person_id': person_id,
             'person_info': person_info or {},
+            'person_key': person_key,
             'screenshot_path': str(screenshot_path),
             'db_log_id': db_result.get('log_id', -1),
             'is_anomaly': True,
@@ -231,7 +252,8 @@ class AlertManager:
         }
 
     def _write_to_database(self, camera_id, screenshot_path,
-                            similarity, alert_time):
+                            similarity, alert_time,
+                            person_key=None, feature_vec=None, feature_type=None):
         """
         写入预警日志到 MySQL
         :return: {'log_id': 新记录ID, 'success': bool}
@@ -245,11 +267,22 @@ class AlertManager:
                 print("[WARN] 数据库连接失败，跳过写入")
                 return {'log_id': -1, 'success': False}
 
+            # 特征向量序列化为 JSON 数组存 TEXT
+            feature_vec_json = None
+            if feature_vec is not None:
+                try:
+                    feature_vec_json = json.dumps(np.asarray(feature_vec, dtype=np.float32).tolist())
+                except Exception:
+                    feature_vec_json = None
+
             log_id = db.insert_alert(
                 camera_id=camera_id,
                 screenshot_path=str(screenshot_path),
                 similarity=similarity,
-                handle_status=0  # 未处理
+                handle_status=0,  # 未处理
+                person_key=person_key,
+                feature_vec=feature_vec_json,
+                embedding_type=feature_type
             )
             db.close()
 
@@ -261,6 +294,77 @@ class AlertManager:
         except Exception as e:
             print(f"[WARN] 数据库写入异常: {e}")
             return {'log_id': -1, 'success': False}
+
+    def _assign_person_key(self, feature_vec, feature_type):
+        """
+        给异常人员分配/复用 person_key (人脸优先 + ReID 兜底, 同类型余弦聚类)。
+        - 有特征向量: 与同类型已有簇比对, 相似度 >= 阈值 → 复用其 key; 否则新建簇。
+        - 无特征向量: 每次生成独立 key (不聚类)。
+        """
+        if feature_vec is None:
+            self._cluster_seq += 1
+            return f"anom_nofeat_{int(time.time() * 1000)}_{self._cluster_seq}"
+
+        vec = np.asarray(feature_vec, dtype=np.float32).reshape(-1)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / (norm + 1e-8)
+
+        threshold = (self.FACE_CLUSTER_THRESHOLD if feature_type == 'face'
+                     else self.REID_CLUSTER_THRESHOLD)
+
+        best_key, best_sim = None, -1.0
+        for key, c in self._clusters.items():
+            if c['feature_type'] != feature_type:
+                continue
+            sim = float(np.dot(c['feature_vec'], vec))
+            if sim > best_sim:
+                best_sim, best_key = sim, key
+
+        if best_key is not None and best_sim >= threshold:
+            return best_key
+
+        self._cluster_seq += 1
+        new_key = f"anom_{int(time.time() * 1000)}_{self._cluster_seq}"
+        self._clusters[new_key] = {'feature_vec': vec, 'feature_type': feature_type}
+        return new_key
+
+    def _rebuild_clusters(self):
+        """从已有预警记录重建按人聚类 (重启后同一人仍归入同一 person_key)"""
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from db_mysql import HotelDatabase
+
+            db = HotelDatabase(**self.db_config)
+            if not db.test_connection():
+                db.close()
+                return
+            alerts = db.get_all_alerts(limit=10000)
+            db.close()
+
+            max_seq = 0
+            for a in alerts:
+                key = a.get('person_key')
+                if not key:
+                    continue
+                try:
+                    vec = np.array(json.loads(a['feature_vec']), dtype=np.float32).reshape(-1)
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    continue
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec = vec / (norm + 1e-8)
+                etype = a.get('embedding_type') or 'reid'
+                self._clusters.setdefault(key, {'feature_vec': vec, 'feature_type': etype})
+                try:
+                    max_seq = max(max_seq, int(key.rsplit('_', 1)[-1]))
+                except (ValueError, IndexError):
+                    pass
+
+            self._cluster_seq = max_seq
+            print(f"[INFO] 从预警记录重建 {len(self._clusters)} 个异常人员簇")
+        except Exception as e:
+            print(f"[WARN] 重建异常人员簇失败: {e}")
 
     def get_next_alert(self, timeout=0.1):
         """获取队列中下一个预警"""

@@ -320,9 +320,11 @@ class FaceMatchingPipeline:
                 'face_detected': False, 'is_matched': False, 'similarity': 0.0,
                 'person_id': -1, 'person_info': {}, 'is_anomaly': True,
                 'message': '未检测到人脸',
+                'feature_vec': None, 'feature_type': 'face',
             }
 
         best = None
+        best_emb = None
         for face in faces:
             # 用 5 点关键点对齐到 ArcFace 规范 112×112, 失败则回退原始 crop
             aligned = align_face(image, face['keypoints'])
@@ -333,10 +335,13 @@ class FaceMatchingPipeline:
             r['face_bbox'] = face['bbox']
             if best is None or r['similarity'] > best['similarity']:
                 best = r
+                best_emb = emb
 
         best['face_detected'] = True
         best['is_anomaly'] = not best['is_matched']
         best['num_faces'] = len(faces)
+        best['feature_vec'] = best_emb  # 512 维 L2 归一化向量 (供按人聚类/登记复用)
+        best['feature_type'] = 'face'
         return best
 
 
@@ -379,6 +384,10 @@ class FusedMatchingPipeline:
         reid_result = self.reid_pipeline.process(roi)
         reid_result['matched_by'] = 'reid'
         reid_result['face_detected'] = face_result['face_detected']
+        # 聚类/登记用特征向量: 人脸优先 (检出脸即用人脸向量, 更精准), 无人脸才用 ReID 兜底
+        if face_result.get('feature_vec') is not None:
+            reid_result['feature_vec'] = face_result['feature_vec']
+            reid_result['feature_type'] = 'face'
         return reid_result
 
     @staticmethod

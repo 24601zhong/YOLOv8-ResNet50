@@ -521,6 +521,10 @@ class ReidMatchingPipeline:
         # 附加特征提取时间
         result['extraction_time_ms'] = self.extractor.extraction_times[-1] if self.extractor.extraction_times else 0
 
+        # 附加原始特征向量 (2048 维 L2 归一化, 供按人聚类/登记复用)
+        result['feature_vec'] = feature
+        result['feature_type'] = 'reid'
+
         return result
 
     def process_batch(self, images):

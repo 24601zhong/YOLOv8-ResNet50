@@ -83,6 +83,9 @@ system_stats = {
     'start_time': time.time(), 'is_running': False
 }
 
+# 已识别人员去重集合 (person_id), 同一人只计一次"已识别人员数"
+recognized_person_ids = set()
+
 
 # ============================================================
 # 初始化系统组件
@@ -100,6 +103,8 @@ def init_system(db_config, yolo_model_path, reid_model_path):
     db = HotelDatabase(**db_config)
     if db.test_connection():
         print("[1/5] [OK] MySQL 数据库连接成功")
+        # 幂等迁移: 为 alert_log 补充按人聚合所需列 (person_key/feature_vec/embedding_type)
+        db.ensure_alert_schema()
     else:
         print("[1/5] [WARN] MySQL 连接失败，使用演示模式")
 
@@ -215,11 +220,17 @@ def detection_loop():
                         camera_id=camera_id, frame=frame,
                         similarity=match_result['similarity'],
                         person_id=match_result.get('person_id', -1),
-                        person_info=match_result['person_info']
+                        person_info=match_result['person_info'],
+                        feature_vec=match_result.get('feature_vec'),
+                        feature_type=match_result.get('feature_type')
                     )
                     system_stats['alerts_today'] += 1
                 else:
-                    system_stats['matched_persons'] += 1
+                    # 已识别人员数去重: 同一 person_id 只计一次, 只有不同人员才累加
+                    pid = match_result.get('person_id', -1)
+                    if pid and pid > 0 and pid not in recognized_person_ids:
+                        recognized_person_ids.add(pid)
+                        system_stats['matched_persons'] += 1
 
             processed_detections.append(det)
 
@@ -369,7 +380,28 @@ def alerts_page():
         for a in alerts:
             if a.get('screenshot_path'):
                 a['screenshot_url'] = '/output/alert_screenshots/' + os.path.basename(a['screenshot_path'])
-    return render_template('alerts.html', alerts=alerts)
+
+    # 按 person_key 分组成"一人一条预警" (同一异常人员的多张截图合并到一条)
+    groups = {}
+    for a in alerts:
+        key = a.get('person_key') or f"single_{a['log_id']}"
+        groups.setdefault(key, {'person_key': key, 'alerts': []})['alerts'].append(a)
+
+    alert_groups = []
+    for g in groups.values():
+        g['alerts'] = sorted(g['alerts'], key=lambda x: str(x.get('alert_time') or ''), reverse=True)
+        g['count'] = len(g['alerts'])
+        g['latest'] = g['alerts'][0]
+        g['first_time'] = g['alerts'][-1].get('alert_time')
+        g['last_time'] = g['alerts'][0].get('alert_time')
+        g['camera_ids'] = sorted({str(a.get('camera_id') or '') for a in g['alerts']})
+        g['max_similarity'] = max((a.get('similarity') or 0) for a in g['alerts'])
+        g['handled'] = all((a.get('handle_status') or 0) == 1 for a in g['alerts'])
+        alert_groups.append(g)
+
+    alert_groups.sort(key=lambda g: str(g.get('last_time') or ''), reverse=True)
+
+    return render_template('alerts.html', alert_groups=alert_groups)
 
 
 @app.route('/persons')
@@ -462,6 +494,13 @@ def api_add_camera():
     ok = add_camera(source, camera_id, name=name, location=location, source_type=source_type)
     if ok:
         return jsonify({'success': True, 'camera_id': camera_id, 'message': '摄像头已添加'})
+    if source_type == 'rtsp':
+        return jsonify({
+            'success': False,
+            'message': (f'无法打开 RTSP 摄像头: {source}。请检查 IP/端口/账号密码/路径是否正确、'
+                        '摄像头是否在线且与服务器在同一网络。常见路径: 海康 /Streaming/Channels/101, '
+                        '大华 /cam/realmonitor?channel=1&subtype=0, 通用 /live')
+        }), 500
     return jsonify({'success': False, 'message': f'无法打开摄像头: {source}'}), 500
 
 
@@ -534,7 +573,11 @@ def api_detect():
                 det['matched_by'] = match.get('matched_by', 'reid')
 
                 if match['is_anomaly']:
-                    alert_mgr.trigger_alert(camera_id, frame, match['similarity'])
+                    alert_mgr.trigger_alert(
+                        camera_id, frame, match['similarity'],
+                        feature_vec=match.get('feature_vec'),
+                        feature_type=match.get('feature_type')
+                    )
 
             result['detections'].append(det)
 
@@ -657,6 +700,106 @@ def api_handle_alert(log_id):
 def api_delete_alert(log_id):
     ok = db.delete_alert(log_id) if db else False
     return jsonify({'success': ok})
+
+
+def _delete_alert_files(screenshot_paths):
+    """删除预警截图文件 (仅 alert_ 前缀, 避免误删 reg_*.jpg 人脸照)"""
+    deleted = 0
+    for p in screenshot_paths or []:
+        if not p:
+            continue
+        try:
+            name = os.path.basename(p)
+            if name.startswith('alert_'):
+                fp = os.path.join(app.config['UPLOAD_FOLDER'], name)
+                if os.path.exists(fp):
+                    os.remove(fp)
+                    deleted += 1
+        except Exception:
+            pass
+    return deleted
+
+
+@app.route('/api/alerts', methods=['DELETE'])
+def api_clear_alerts():
+    """一键清空所有预警 (DB 行 + 截图文件)"""
+    deleted = 0
+    if db:
+        existing = db.get_all_alerts(limit=100000)
+        deleted = db.delete_all_alerts()
+        _delete_alert_files([a.get('screenshot_path') for a in existing])
+    return jsonify({'success': True, 'deleted': deleted})
+
+
+@app.route('/api/alert-groups/<person_key>/handle', methods=['POST'])
+def api_handle_alert_group(person_key):
+    """标记同一异常人员的全部预警为已处置"""
+    ok = db.mark_alerts_handled_by_person_key(person_key) if db else False
+    return jsonify({'success': ok})
+
+
+@app.route('/api/alert-groups/<person_key>', methods=['DELETE'])
+def api_delete_alert_group(person_key):
+    """删除同一异常人员的全部预警 (DB 行 + 截图文件)"""
+    ok = False
+    if db:
+        rows = db.get_alerts_by_person_key(person_key)
+        ok = db.delete_alerts_by_person_key(person_key)
+        _delete_alert_files([a.get('screenshot_path') for a in rows])
+    return jsonify({'success': ok})
+
+
+@app.route('/api/alert-groups/<person_key>/register', methods=['POST'])
+def api_register_alert_person(person_key):
+    """把预警中的异常人员登记为住客 (姓名+房号必填, 身份证可选)"""
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    room_num = (data.get('room_num') or '').strip()
+    id_card = (data.get('id_card') or '').strip()
+
+    if not name or not room_num:
+        return jsonify({'success': False, 'message': '请填写姓名和房号'}), 400
+
+    if not id_card:
+        # 生成 18 位唯一占位身份证号 (ANON + 14 位毫秒)
+        id_card = f"ANON{int(time.time() * 1000) % 10**14:014d}"
+
+    if db:
+        existing = db.get_person_by_id_card(id_card)
+        if existing:
+            return jsonify({'success': False, 'message': '身份证已登记'}), 409
+
+    # 从该组预警记录取特征向量 (人脸优先, ReID 兜底)
+    feature_vec = None
+    face_vec = None
+    face_path = None
+    if db:
+        for a in db.get_alerts_by_person_key(person_key):
+            if a.get('feature_vec'):
+                if a.get('embedding_type') == 'face' and face_vec is None:
+                    face_vec = a['feature_vec']
+                elif a.get('embedding_type') == 'reid' and feature_vec is None:
+                    feature_vec = a['feature_vec']
+            if not face_path and a.get('screenshot_path'):
+                face_path = a['screenshot_path']
+
+    if not feature_vec and not face_vec:
+        return jsonify({'success': False, 'message': '该预警无可用特征向量'}), 400
+
+    person_id = db.insert_person(name, id_card, room_num,
+                                 feature_vec=feature_vec,
+                                 face_vec=face_vec,
+                                 face_img_path=face_path)
+
+    # 刷新特征库, 使新住客立即参与匹配
+    reid_pipeline.feature_db.load_from_mysql()
+    if fused_pipeline is not None:
+        fused_pipeline.face_pipeline.face_db.load_from_mysql()
+
+    # 标记该组已处置
+    db.mark_alerts_handled_by_person_key(person_key)
+
+    return jsonify({'success': True, 'person_id': person_id, 'message': '登记成功'})
 
 
 @app.route('/api/persons/<int:person_id>/checkout', methods=['POST'])

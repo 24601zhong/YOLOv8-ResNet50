@@ -14,26 +14,45 @@
         .nav a:hover, .nav a.active { background: rgba(255,255,255,0.15); color: white; }
         .container { padding: 30px 40px; }
         .card { background: white; border-radius: 8px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .filters { display: flex; gap: 16px; margin-bottom: 20px; align-items: center; }
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+        .filters { display: flex; gap: 16px; align-items: center; }
         .filter-btn { padding: 8px 20px; border: 1px solid #ddd; background: white; border-radius: 20px; cursor: pointer; font-size: 14px; }
         .filter-btn.active { background: #1a237e; color: white; border-color: #1a237e; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid #eee; }
-        th { background: #f5f5f5; font-weight: 500; color: #666; font-size: 13px; text-transform: uppercase; }
-        td { font-size: 14px; color: #333; }
-        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; }
-        .badge.pending { background: #ffebee; color: #c62828; }
-        .badge.handled { background: #e8f5e9; color: #2e7d32; }
         .btn { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-decoration: none; display: inline-block; }
         .btn-primary { background: #1a237e; color: white; }
         .btn-danger { background: #c62828; color: white; }
         .btn-success { background: #2e7d32; color: white; }
-        .screenshot-thumb { width: 80px; height: 60px; object-fit: cover; border-radius: 4px; cursor: pointer; }
+        .btn-warn { background: #ef6c00; color: white; }
+        .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+        .group-card { border: 1px solid #eee; border-radius: 8px; margin-bottom: 20px; overflow: hidden; }
+        .group-head { display: flex; gap: 16px; padding: 16px; align-items: center; background: #fafafa; }
+        .group-thumb { width: 120px; height: 90px; object-fit: cover; border-radius: 6px; cursor: pointer; flex-shrink: 0; }
+        .group-meta { flex: 1; }
+        .group-meta .title { font-size: 16px; font-weight: 600; color: #1a237e; margin-bottom: 6px; }
+        .group-meta .line { font-size: 13px; color: #666; margin-bottom: 4px; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+        .badge.pending { background: #ffebee; color: #c62828; }
+        .badge.handled { background: #e8f5e9; color: #2e7d32; }
+        .group-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+        .group-body { padding: 12px 16px 16px; }
+        .thumb-strip { display: flex; gap: 8px; flex-wrap: wrap; }
+        .thumb-strip .shot { width: 80px; height: 60px; object-fit: cover; border-radius: 4px; cursor: pointer; border: 1px solid #eee; }
+        .thumb-label { font-size: 12px; color: #999; margin-bottom: 8px; }
         .empty { text-align: center; padding: 40px; color: #999; }
-        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
-        .modal-content { max-width: 80%; max-height: 80%; }
-        .modal img { max-width: 100%; max-height: 80vh; border-radius: 8px; }
-        .modal .close { position: absolute; top: 20px; right: 20px; background: white; border: none; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; font-size: 20px; }
+
+        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.show { display: flex; }
+        .modal-content { background: white; border-radius: 8px; padding: 24px; width: 380px; max-width: 90%; }
+        .modal-content h3 { margin-bottom: 16px; color: #1a237e; }
+        .form-group { margin-bottom: 14px; }
+        .form-group label { display: block; font-size: 13px; color: #555; margin-bottom: 6px; }
+        .form-group input { width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+        .modal-img { max-width: 80%; max-height: 80vh; border-radius: 8px; }
+        .imgmodal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); z-index: 1100; justify-content: center; align-items: center; }
+        .imgmodal.show { display: flex; }
+        .imgmodal .close { position: absolute; top: 20px; right: 20px; background: white; border: none; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; font-size: 20px; }
     </style>
 </head>
 <body>
@@ -51,68 +70,89 @@
 
     <div class="container">
         <div class="card">
-            <div class="filters">
-                <button class="filter-btn active" onclick="filterAlerts('all')">全部</button>
-                <button class="filter-btn" onclick="filterAlerts('0')">未处理</button>
-                <button class="filter-btn" onclick="filterAlerts('1')">已处置</button>
+            <div class="toolbar">
+                <div class="filters">
+                    <button class="filter-btn active" onclick="filterAlerts('all')">全部</button>
+                    <button class="filter-btn" onclick="filterAlerts('0')">未处理</button>
+                    <button class="filter-btn" onclick="filterAlerts('1')">已处置</button>
+                </div>
+                <button class="btn btn-danger" onclick="clearAllAlerts()">🗑 一键删除全部</button>
             </div>
 
-            {% if alerts %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>预警时间</th>
-                        <th>摄像头</th>
-                        <th>相似度</th>
-                        <th>截图</th>
-                        <th>状态</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for alert in alerts %}
-                    <tr id="alert_{{ alert.log_id }}">
-                        <td>{{ alert.alert_time }}</td>
-                        <td>{{ alert.camera_id }}</td>
-                        <td>{{ "%.3f"|format(alert.similarity or 0) }}</td>
-                        <td>
-                            {% if alert.screenshot_path %}
-                            <img src="{{ alert.screenshot_url }}"
-                                 class="screenshot-thumb"
-                                 onclick="viewScreenshot('{{ alert.screenshot_url }}')"
-                                 alt="预警截图">
-                            {% else %}
-                            无截图
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if alert.handle_status == 0 %}
-                            <span class="badge pending">未处理</span>
-                            {% else %}
+            {% if alert_groups %}
+                {% for group in alert_groups %}
+                <div class="group-card" id="group_{{ group.person_key }}">
+                    <div class="group-head">
+                        {% if group.latest and group.latest.screenshot_url %}
+                        <img class="group-thumb" src="{{ group.latest.screenshot_url }}"
+                             onclick="viewScreenshot('{{ group.latest.screenshot_url }}')" alt="预警截图">
+                        {% else %}
+                        <div class="group-thumb" style="display:flex;align-items:center;justify-content:center;color:#bbb;">无截图</div>
+                        {% endif %}
+                        <div class="group-meta">
+                            <div class="title">异常人员 #{{ loop.index }}</div>
+                            <div class="line">📷 截图 {{ group.count }} 张 &nbsp;|&nbsp; 摄像头: {{ group.camera_ids|join(', ') }}</div>
+                            <div class="line">⏱ {{ group.first_time }} ~ {{ group.last_time }}</div>
+                            <div class="line">相似度: {{ "%.3f"|format(group.max_similarity or 0) }}</div>
+                        </div>
+                        <div class="group-actions">
+                            {% if group.handled %}
                             <span class="badge handled">已处置</span>
+                            {% else %}
+                            <span class="badge pending">未处理</span>
+                            <button class="btn btn-primary btn-sm" onclick="openRegisterModal('{{ group.person_key }}')">📝 登记</button>
+                            <button class="btn btn-success btn-sm" onclick="handleGroup('{{ group.person_key }}')">✓ 标记处置</button>
                             {% endif %}
-                        </td>
-                        <td>
-                            {% if alert.handle_status == 0 %}
-                            <button class="btn btn-success" onclick="handleAlert({{ alert.log_id }}, 1)">✓ 标记处置</button>
-                            {% endif %}
-                            <button class="btn btn-danger" onclick="deleteAlert({{ alert.log_id }})">🗑 删除</button>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+                            <button class="btn btn-danger btn-sm" onclick="deleteGroup('{{ group.person_key }}')">🗑 删除</button>
+                        </div>
+                    </div>
+                    <div class="group-body">
+                        <div class="thumb-label">该人员全部截图（点击放大）</div>
+                        <div class="thumb-strip">
+                            {% for alert in group.alerts %}
+                                {% if alert.screenshot_url %}
+                                <img class="shot" src="{{ alert.screenshot_url }}"
+                                     onclick="viewScreenshot('{{ alert.screenshot_url }}')" alt="截图">
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
             {% else %}
             <div class="empty">暂无预警记录</div>
             {% endif %}
         </div>
     </div>
 
-    <div class="modal" id="imageModal" onclick="closeModal()">
-        <button class="close">✕</button>
+    <!-- 登记弹窗 -->
+    <div class="modal" id="registerModal">
         <div class="modal-content">
-            <img id="modalImage" src="" alt="预警截图">
+            <h3>📝 登记异常人员为住客</h3>
+            <input type="hidden" id="regPersonKey" value="">
+            <div class="form-group">
+                <label>姓名 <span style="color:red">*</span></label>
+                <input type="text" id="regName" placeholder="请输入姓名">
+            </div>
+            <div class="form-group">
+                <label>房号 <span style="color:red">*</span></label>
+                <input type="text" id="regRoom" placeholder="请输入房号">
+            </div>
+            <div class="form-group">
+                <label>身份证号（选填）</label>
+                <input type="text" id="regIdCard" placeholder="留空则自动生成">
+            </div>
+            <div class="form-actions">
+                <button class="btn" onclick="closeRegisterModal()">取消</button>
+                <button class="btn btn-primary" onclick="submitRegister()">确认登记</button>
+            </div>
         </div>
+    </div>
+
+    <!-- 图片放大弹窗 -->
+    <div class="imgmodal" id="imageModal" onclick="closeImageModal()">
+        <button class="close">✕</button>
+        <img class="modal-img" id="modalImage" src="" alt="预警截图">
     </div>
 
     <script>
@@ -122,44 +162,98 @@
             window.location.href = '/alerts' + (status !== 'all' ? '?status=' + status : '');
         }
 
-        async function handleAlert(logId, status) {
+        async function clearAllAlerts() {
+            if (!confirm('确定一键删除全部预警记录吗？此操作不可恢复。')) return;
             try {
-                const response = await fetch('/api/alerts/' + logId + '/handle', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ status: status })
-                });
+                const response = await fetch('/api/alerts', { method: 'DELETE' });
                 const result = await response.json();
                 if (result.success) {
                     location.reload();
-                }
-            } catch (err) {
-                alert('操作失败: ' + err.message);
-            }
-        }
-
-        async function deleteAlert(logId) {
-            if (!confirm('确定删除此预警记录?')) return;
-            try {
-                const response = await fetch('/api/alerts/' + logId, {
-                    method: 'DELETE'
-                });
-                const result = await response.json();
-                if (result.success) {
-                    document.getElementById('alert_' + logId).remove();
+                } else {
+                    alert('删除失败');
                 }
             } catch (err) {
                 alert('删除失败: ' + err.message);
             }
         }
 
-        function viewScreenshot(path) {
-            document.getElementById('modalImage').src = path;
-            document.getElementById('imageModal').style.display = 'flex';
+        async function handleGroup(personKey) {
+            try {
+                const response = await fetch('/api/alert-groups/' + encodeURIComponent(personKey) + '/handle', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    location.reload();
+                } else {
+                    alert('操作失败');
+                }
+            } catch (err) {
+                alert('操作失败: ' + err.message);
+            }
         }
 
-        function closeModal() {
-            document.getElementById('imageModal').style.display = 'none';
+        async function deleteGroup(personKey) {
+            if (!confirm('确定删除该人员的全部预警记录吗？')) return;
+            try {
+                const response = await fetch('/api/alert-groups/' + encodeURIComponent(personKey), { method: 'DELETE' });
+                const result = await response.json();
+                if (result.success) {
+                    location.reload();
+                } else {
+                    alert('删除失败');
+                }
+            } catch (err) {
+                alert('删除失败: ' + err.message);
+            }
+        }
+
+        function openRegisterModal(personKey) {
+            document.getElementById('regPersonKey').value = personKey;
+            document.getElementById('regName').value = '';
+            document.getElementById('regRoom').value = '';
+            document.getElementById('regIdCard').value = '';
+            document.getElementById('registerModal').classList.add('show');
+        }
+
+        function closeRegisterModal() {
+            document.getElementById('registerModal').classList.remove('show');
+        }
+
+        async function submitRegister() {
+            const personKey = document.getElementById('regPersonKey').value;
+            const name = document.getElementById('regName').value.trim();
+            const roomNum = document.getElementById('regRoom').value.trim();
+            const idCard = document.getElementById('regIdCard').value.trim();
+
+            if (!name || !roomNum) {
+                alert('请填写姓名和房号');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/alert-groups/' + encodeURIComponent(personKey) + '/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, room_num: roomNum, id_card: idCard })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    alert('登记成功！');
+                    location.reload();
+                } else {
+                    alert('登记失败: ' + (result.message || '未知错误'));
+                }
+            } catch (err) {
+                alert('登记失败: ' + err.message);
+            }
+        }
+
+        function viewScreenshot(path) {
+            document.getElementById('modalImage').src = path;
+            document.getElementById('imageModal').classList.add('show');
+        }
+
+        function closeImageModal() {
+            document.getElementById('imageModal').classList.remove('show');
         }
     </script>
 </body>
