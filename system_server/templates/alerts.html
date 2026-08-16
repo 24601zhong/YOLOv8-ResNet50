@@ -255,6 +255,14 @@
         function closeImageModal() {
             document.getElementById('imageModal').classList.remove('show');
         }
+
+        // 自动刷新: 预警记录实时更新 (登记弹窗/图片放大打开时暂停, 避免打断操作)
+        setInterval(() => {
+            if (!document.getElementById('registerModal').classList.contains('show') &&
+                !document.getElementById('imageModal').classList.contains('show')) {
+                location.reload();
+            }
+        }, 8000);
     </script>
 </body>
 </html>
