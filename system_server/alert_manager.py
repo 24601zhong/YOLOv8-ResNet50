@@ -33,8 +33,14 @@ class AlertManager:
     """
 
     # 同人判定余弦阈值 (特征已 L2 归一化, 点积即余弦)
-    FACE_CLUSTER_THRESHOLD = 0.5   # 人脸 512 维
-    REID_CLUSTER_THRESHOLD = 0.7   # ReID 2048 维
+    # 实测 (CAM_001 单人 30s 连续 49 个 ReID 特征): 两两余弦 中位数 0.23, 75 分位 0.51, 90 分位 0.85。
+    # 同一人的 ReID 特征呈双峰: 清晰大目标 0.5~0.9, 小目标/遮挡退化后 <0.3。0.55 会把同人拆散,
+    # 0.35 可合并同人 (退化样本交空间-时序兜底), 又高于不同人的 <0.2 区。人脸 512 维更具判别性, 更低。
+    FACE_CLUSTER_THRESHOLD = 0.4    # 人脸 512 维
+    REID_CLUSTER_THRESHOLD = 0.35   # ReID 2048 维
+    CLUSTER_MAX_EXEMPLARS = 5       # 每个簇每维度保留的历史样例数 (多样例取最大余弦, 抗姿态/视角多模态)
+    TRACK_IOU_THRESHOLD = 0.3       # 空间-时序兜底: bbox IoU 下限 (同一人连续出现)
+    TRACK_TTL = 3.0                 # 活跃 track 存活秒数 (超过视为可能换了人)
 
     def __init__(self, output_dir=None, db_config=None):
         """
@@ -87,9 +93,13 @@ class AlertManager:
         self.alert_cooldown = 5.0  # 秒
         self._last_alert_time = {}  # (camera_id, person_key) -> 上次触发时间戳
 
-        # 按人聚类状态: person_key -> {'face_vec': 512维人脸向量|None, 'reid_vec': 2048维全身向量|None}
+        # 按人聚类状态: person_key -> {'face_vec': [512维人脸向量...], 'reid_vec': [2048维全身向量...]}
         self._clusters = {}
         self._cluster_seq = 0  # 自增序号, 保证新 key 不重复
+
+        # 空间-时序 track: person_key -> {'bbox': [x1,y1,x2,y2], 'ts': 最后出现时间戳}
+        # 特征偶发退化 (小目标/遮挡) 时, 靠 bbox IoU 复用"同一人连续出现"的 key, 防止拆散
+        self._tracks = {}
 
         # 从已有预警记录重建聚类 (重启后同一人仍归入同一 person_key)
         self._rebuild_clusters()
@@ -100,7 +110,8 @@ class AlertManager:
     def trigger_alert(self, camera_id, frame, similarity,
                       person_id=-1, person_info=None,
                       feature_vec=None, feature_type=None,
-                      face_feature_vec=None, reid_feature_vec=None):
+                      face_feature_vec=None, reid_feature_vec=None,
+                      bbox=None):
         """
         触发预警（完整流程）
         :param camera_id: 摄像头编号
@@ -112,6 +123,7 @@ class AlertManager:
         :param feature_type: 'face' 或 'reid'
         :param face_feature_vec: 人脸特征 (512, 检出脸才有), 用于人脸簇
         :param reid_feature_vec: ReID 全身特征 (2048, 始终有), 用于 ReID 簇
+        :param bbox: 行人框 [x1,y1,x2,y2], 用于把截图裁剪到该人 (缺省则整帧)
         :return: 预警记录字典
         """
         # 按人聚类: 分配/复用 person_key (人脸优先 + ReID 兜底, 且 face↔reid 跨类型合并)
@@ -119,7 +131,7 @@ class AlertManager:
                     else (feature_vec if feature_type == 'face' else None))
         reid_vec = (reid_feature_vec if reid_feature_vec is not None
                     else (feature_vec if feature_type == 'reid' else None))
-        person_key = self._assign_person_key(face_vec, reid_vec)
+        person_key = self._assign_person_key(face_vec, reid_vec, bbox=bbox)
 
         # 预警冷却: 按 (摄像头, 人) 维度, 同人冷却期内不重复触发, 不同人各自立即触发
         now = time.time()
@@ -130,8 +142,8 @@ class AlertManager:
 
         alert_time = datetime.now()
 
-        # Step 1: 保存截图
-        screenshot_path = self._save_screenshot(frame, camera_id, alert_time)
+        # Step 1: 保存截图 (裁剪到异常人员个体, 对应其身份)
+        screenshot_path = self._save_screenshot(frame, camera_id, alert_time, bbox=bbox)
 
         # Step 2: 触发蜂鸣
         self._play_beep()
@@ -181,17 +193,21 @@ class AlertManager:
 
         return alert_record
 
-    def _save_screenshot(self, frame, camera_id, alert_time):
+    def _save_screenshot(self, frame, camera_id, alert_time, bbox=None):
         """
         保存预警截图
+        :param bbox: 行人框 [x1,y1,x2,y2]; 提供时裁剪到该人 (带边距), 否则整帧
         :return: 保存路径
         """
         timestamp = alert_time.strftime('%Y%m%d_%H%M%S_%f')[:16]
         filename = f"alert_{camera_id}_{timestamp}.jpg"
         filepath = self.output_dir / filename
 
-        # 在截图上绘制预警信息
-        annotated_frame = frame.copy()
+        # 裁剪到异常人员个体 (带边距), 让截图对应到"这个人"的身份, 而非整个监控画面
+        if bbox is not None and frame is not None:
+            annotated_frame = self._crop_person(frame, bbox)
+        else:
+            annotated_frame = frame.copy()
 
         # 添加红色边框
         h, w = annotated_frame.shape[:2]
@@ -208,6 +224,23 @@ class AlertManager:
         cv2.imwrite(str(filepath), annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
         return filepath
+
+    @staticmethod
+    def _crop_person(frame, bbox, margin=0.25):
+        """按行人框裁剪个体图, 四周各留 margin 比例边距, 坐标钳制到帧内"""
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        pad_x = int(bw * margin)
+        pad_y = int(bh * margin)
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(w, x2 + pad_x)
+        y2 = min(h, y2 + pad_y)
+        if x2 <= x1 or y2 <= y1:
+            return frame.copy()
+        return frame[y1:y2, x1:x2].copy()
 
     def _play_beep(self):
         """播放蜂鸣声"""
@@ -313,73 +346,149 @@ class AlertManager:
             v = v / (norm + 1e-8)
         return v
 
-    def _match_or_create(self, vec, field, threshold):
+    def _match(self, vec, field, threshold):
         """
-        在指定特征维度 (field='face_vec' 或 'reid_vec') 上找最佳匹配簇;
-        命中(余弦>=阈值)则复用其 key, 否则新建簇并存入该维度向量。
+        在指定特征维度 (field='face_vec' 或 'reid_vec') 上找最佳匹配簇 (不创建)。
+        与簇内全部历史样例取「最大」余弦 (对姿态/视角多模态更鲁棒);
+        命中返回 key, 未命中返回 None。
         """
+        if vec is None:
+            return None
         best_key, best_sim = None, -1.0
         for key, c in self._clusters.items():
-            cv = c.get(field)
-            if cv is None:
+            exemplars = c.get(field)
+            if not exemplars:
                 continue
-            sim = float(np.dot(cv, vec))
+            sim = float(np.max(np.dot(np.asarray(exemplars, dtype=np.float32), vec)))
             if sim > best_sim:
                 best_sim, best_key = sim, key
-
         if best_key is not None and best_sim >= threshold:
             return best_key
+        return None
 
+    def _append_feature(self, key, field, vec):
+        """把 vec 并入簇的指定维度样例 (保留最近 CLUSTER_MAX_EXEMPLARS 个, 防止无界膨胀)"""
+        if key is None or vec is None:
+            return
+        cl = self._clusters.setdefault(key, {'face_vec': [], 'reid_vec': []})
+        lst = cl.setdefault(field, [])
+        lst.append(vec)
+        if len(lst) > self.CLUSTER_MAX_EXEMPLARS:
+            lst.pop(0)
+
+    def _new_cluster(self, face_vec=None, reid_vec=None):
+        """新建簇并存入初始特征样例"""
         self._cluster_seq += 1
         new_key = f"anom_{int(time.time() * 1000)}_{self._cluster_seq}"
-        self._clusters[new_key] = {'face_vec': None, 'reid_vec': None}
-        self._clusters[new_key][field] = vec
+        self._clusters[new_key] = {'face_vec': [], 'reid_vec': []}
+        self._append_feature(new_key, 'face_vec', face_vec)
+        self._append_feature(new_key, 'reid_vec', reid_vec)
         return new_key
 
-    def _assign_person_key(self, face_vec, reid_vec):
+    @staticmethod
+    def _bbox_iou(a, b):
+        """计算两个 [x1,y1,x2,y2] 框的 IoU"""
+        if a is None or b is None:
+            return 0.0
+        ax1, ay1, ax2, ay2 = [float(v) for v in a]
+        bx1, by1, bx2, by2 = [float(v) for v in b]
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0
+        area_a = max(1.0, (ax2 - ax1) * (ay2 - ay1))
+        area_b = max(1.0, (bx2 - bx1) * (by2 - by1))
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    def _match_track(self, bbox):
+        """空间-时序兜底: 找与 bbox 空间重叠且 TRACK_TTL 内出现过的活跃 track, 复用其 key"""
+        if bbox is None:
+            return None
+        now = time.time()
+        # 清理过期 track, 防止长期运行无界膨胀
+        stale = [k for k, tr in self._tracks.items() if now - tr['ts'] > self.TRACK_TTL]
+        for k in stale:
+            self._tracks.pop(k, None)
+
+        best_key, best_iou = None, self.TRACK_IOU_THRESHOLD
+        for key, tr in self._tracks.items():
+            iou = self._bbox_iou(bbox, tr['bbox'])
+            if iou > best_iou:
+                best_iou, best_key = iou, key
+        return best_key
+
+    def _update_track(self, key, bbox):
+        """更新 key 对应的活跃 track (bbox + 时间戳)"""
+        if key is None or bbox is None:
+            return
+        self._tracks[key] = {'bbox': [float(v) for v in bbox], 'ts': time.time()}
+
+    def _resolve_keys(self, face_key, reid_key, face_vec, reid_vec):
         """
-        给异常人员分配/复用 person_key (人脸优先 + ReID 兜底, 支持 face↔reid 跨类型合并)。
-        - 人脸簇和 ReID 簇分别用各自阈值聚类;
-        - 同一次检测同时命中人脸簇和 ReID 簇 → 判定为同一人, 合并 (人脸簇为规范 key)。
-        - 只有脸/只有全身 → 归入对应簇 (若带了另一路特征则补充存进该簇, 供后续合并)。
-        - 两路特征都无 → 每次独立 key。
+        融合人脸/ReID 命中结果:
+        - 都未命中 → None
+        - 仅人脸 / 仅 ReID → 对应 key
+        - 都命中不同 key → 同一人, 合并 (人脸簇为规范 key)
+        命中后把本次多模态特征并入簇, 更新历史样例。
+        """
+        if face_key is not None and reid_key is not None and face_key != reid_key:
+            self._merge(reid_key, face_key)
+
+        key = face_key if face_key is not None else reid_key
+        if key is None:
+            return None
+        self._append_feature(key, 'face_vec', face_vec)
+        self._append_feature(key, 'reid_vec', reid_vec)
+        return key
+
+    def _assign_person_key(self, face_vec, reid_vec, bbox=None):
+        """
+        给异常人员分配/复用 person_key (空间-时序优先, 人脸+ReID 兜底)。
+        三级策略:
+          1) 空间-时序优先: bbox 与活跃 track 重叠 (同一人连续出现) → 直接复用其 key,
+             即使特征偶发退化 (小目标/遮挡/姿态变化) 也不拆散;
+          2) 特征聚类: 无时序重叠 (新人/离散出现) → 人脸/ReID 按阈值匹配或新建簇;
+          3) 全未命中 → 新建簇。
+        同一条 track 上的人脸与全身特征会自然并入同一簇, 无需额外跨类型合并。
         """
         face_vec = self._normalize(face_vec)
         reid_vec = self._normalize(reid_vec)
 
-        face_key = (self._match_or_create(face_vec, 'face_vec', self.FACE_CLUSTER_THRESHOLD)
-                    if face_vec is not None else None)
-        reid_key = (self._match_or_create(reid_vec, 'reid_vec', self.REID_CLUSTER_THRESHOLD)
-                    if reid_vec is not None else None)
+        # 1) 空间-时序优先 (同一人连续出现, 靠 bbox IoU 维持身份连续性)
+        track_key = self._match_track(bbox)
+        if track_key is not None:
+            self._append_feature(track_key, 'face_vec', face_vec)
+            self._append_feature(track_key, 'reid_vec', reid_vec)
+            self._update_track(track_key, bbox)
+            return track_key
 
-        if face_key is None and reid_key is None:
-            self._cluster_seq += 1
-            return f"anom_nofeat_{int(time.time() * 1000)}_{self._cluster_seq}"
+        # 2) 特征聚类 (无时序重叠 → 新人或离散出现)
+        face_key = self._match(face_vec, 'face_vec', self.FACE_CLUSTER_THRESHOLD)
+        reid_key = self._match(reid_vec, 'reid_vec', self.REID_CLUSTER_THRESHOLD)
+        key = self._resolve_keys(face_key, reid_key, face_vec, reid_vec)
+        if key is not None:
+            self._update_track(key, bbox)
+            return key
 
-        if face_key is None:
-            return reid_key
-
-        if reid_key is None:
-            # 只有脸命中 (没带 reid 或 reid 未命中): 若带了 reid 特征则补充进该簇
-            if reid_vec is not None and self._clusters[face_key].get('reid_vec') is None:
-                self._clusters[face_key]['reid_vec'] = reid_vec
-            return face_key
-
-        if face_key == reid_key:
-            return face_key
-
-        # 脸和全身分别命中不同簇 → 同一人, 合并 (人脸簇为规范 key)
-        return self._merge(reid_key, face_key)
+        # 3) 全未命中 → 新建簇
+        key = self._new_cluster(face_vec, reid_vec)
+        self._update_track(key, bbox)
+        return key
 
     def _merge(self, from_key, to_key):
-        """把 from_key 簇合并进 to_key 簇 (特征取并集), 并同步更新 DB 里 from_key 的旧预警记录"""
+        """把 from_key 簇合并进 to_key 簇 (特征样例取并集), 并同步更新 DB 里 from_key 的旧预警记录"""
         f = self._clusters.get(from_key)
         t = self._clusters.get(to_key)
         if f and t:
             for field in ('face_vec', 'reid_vec'):
-                if t.get(field) is None and f.get(field) is not None:
-                    t[field] = f[field]
+                if f.get(field):
+                    merged = (t.get(field) or []) + f.get(field)
+                    t[field] = merged[-self.CLUSTER_MAX_EXEMPLARS:]
         self._clusters.pop(from_key, None)
+        self._tracks.pop(from_key, None)
         self._rekey_db(from_key, to_key)
         return to_key
 
@@ -425,9 +534,9 @@ class AlertManager:
                     continue
                 etype = a.get('embedding_type') or 'reid'
                 field = 'face_vec' if etype == 'face' else 'reid_vec'
-                cl = self._clusters.setdefault(key, {'face_vec': None, 'reid_vec': None})
-                if cl[field] is None:
-                    cl[field] = vec
+                cl = self._clusters.setdefault(key, {'face_vec': [], 'reid_vec': []})
+                if len(cl[field]) < self.CLUSTER_MAX_EXEMPLARS:
+                    cl[field].append(vec)
                 try:
                     max_seq = max(max_seq, int(key.rsplit('_', 1)[-1]))
                 except (ValueError, IndexError):

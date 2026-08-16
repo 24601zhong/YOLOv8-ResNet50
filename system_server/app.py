@@ -224,7 +224,8 @@ def detection_loop():
                         feature_vec=match_result.get('feature_vec'),
                         feature_type=match_result.get('feature_type'),
                         face_feature_vec=match_result.get('face_feature_vec'),
-                        reid_feature_vec=match_result.get('reid_feature_vec')
+                        reid_feature_vec=match_result.get('reid_feature_vec'),
+                        bbox=bbox
                     )
                     system_stats['alerts_today'] += 1
                 else:
@@ -580,7 +581,8 @@ def api_detect():
                         feature_vec=match.get('feature_vec'),
                         feature_type=match.get('feature_type'),
                         face_feature_vec=match.get('face_feature_vec'),
-                        reid_feature_vec=match.get('reid_feature_vec')
+                        reid_feature_vec=match.get('reid_feature_vec'),
+                        bbox=bbox
                     )
 
             result['detections'].append(det)

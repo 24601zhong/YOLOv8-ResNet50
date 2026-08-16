@@ -29,7 +29,12 @@ class HotelDatabase:
             'cursorclass': pymysql.cursors.DictCursor,
             # MySQL 8 默认 caching_sha2_password; 禁用 SSL 后用 RSA 交换(需 cryptography 包),
             # 避免本地自签名证书导致的 ASN1 SSL 握手失败
-            'ssl_disabled': True
+            'ssl_disabled': True,
+            # 关键: 必须 autocommit=True。pymysql 默认 autocommit=False, 长连接下首个 SELECT
+            # 会开启一个 REPEATABLE READ 事务并冻结快照; app.py 的全局 db 连接在启动时打开,
+            # 之后 alert_manager 用「独立连接」写入的新预警在本连接永远看不到 → /api/alerts 一直返回 []。
+            # autocommit=True 让每条语句自提交, 每次 SELECT 都读到最新已提交数据。
+            'autocommit': True
         }
         self._conn = None
         # pymysql 连接非线程安全; 全局 db 单例被 Flask 多线程并发访问时,
