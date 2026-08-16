@@ -379,15 +379,23 @@ class FusedMatchingPipeline:
             face_result['matched_by'] = 'face'
             return face_result
 
-        # 2) ReID 兜底
+        # 2) ReID 兜底 (始终计算 reid 全身特征)
         roi = cv2.resize(img, (128, 384))
         reid_result = self.reid_pipeline.process(roi)
         reid_result['matched_by'] = 'reid'
         reid_result['face_detected'] = face_result['face_detected']
-        # 聚类/登记用特征向量: 人脸优先 (检出脸即用人脸向量, 更精准), 无人脸才用 ReID 兜底
-        if face_result.get('feature_vec') is not None:
-            reid_result['feature_vec'] = face_result['feature_vec']
+
+        face_feature_vec = face_result.get('feature_vec')   # 512 维, 检出人脸才非 None
+        reid_feature_vec = reid_result.get('feature_vec')   # 2048 维, 始终可用
+
+        # 首选特征向量 (聚类/登记用): 人脸优先, 无人脸才用 ReID
+        if face_feature_vec is not None:
+            reid_result['feature_vec'] = face_feature_vec
             reid_result['feature_type'] = 'face'
+
+        # 同时携带两路特征, 供 AlertManager 做 face↔reid 跨类型合并 (同一人合并成一条)
+        reid_result['face_feature_vec'] = face_feature_vec
+        reid_result['reid_feature_vec'] = reid_feature_vec
         return reid_result
 
     @staticmethod

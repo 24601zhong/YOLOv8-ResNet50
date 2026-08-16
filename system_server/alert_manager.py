@@ -87,7 +87,7 @@ class AlertManager:
         self.alert_cooldown = 5.0  # 秒
         self._last_alert_time = {}  # (camera_id, person_key) -> 上次触发时间戳
 
-        # 按人聚类状态: person_key -> {'feature_vec': L2 归一化向量, 'feature_type': 'face'|'reid'}
+        # 按人聚类状态: person_key -> {'face_vec': 512维人脸向量|None, 'reid_vec': 2048维全身向量|None}
         self._clusters = {}
         self._cluster_seq = 0  # 自增序号, 保证新 key 不重复
 
@@ -99,7 +99,8 @@ class AlertManager:
 
     def trigger_alert(self, camera_id, frame, similarity,
                       person_id=-1, person_info=None,
-                      feature_vec=None, feature_type=None):
+                      feature_vec=None, feature_type=None,
+                      face_feature_vec=None, reid_feature_vec=None):
         """
         触发预警（完整流程）
         :param camera_id: 摄像头编号
@@ -107,12 +108,18 @@ class AlertManager:
         :param similarity: 匹配相似度
         :param person_id: 匹配人员ID（-1 表示未匹配）
         :param person_info: 人员信息
-        :param feature_vec: 原始特征向量 (人脸 512 / ReID 2048), 用于按人聚类与后续登记
+        :param feature_vec: 首选特征向量 (人脸 512 / ReID 2048), 用于入库与后续登记
         :param feature_type: 'face' 或 'reid'
+        :param face_feature_vec: 人脸特征 (512, 检出脸才有), 用于人脸簇
+        :param reid_feature_vec: ReID 全身特征 (2048, 始终有), 用于 ReID 簇
         :return: 预警记录字典
         """
-        # 按人聚类: 分配/复用 person_key (人脸优先 + ReID 兜底)
-        person_key = self._assign_person_key(feature_vec, feature_type)
+        # 按人聚类: 分配/复用 person_key (人脸优先 + ReID 兜底, 且 face↔reid 跨类型合并)
+        face_vec = (face_feature_vec if face_feature_vec is not None
+                    else (feature_vec if feature_type == 'face' else None))
+        reid_vec = (reid_feature_vec if reid_feature_vec is not None
+                    else (feature_vec if feature_type == 'reid' else None))
+        person_key = self._assign_person_key(face_vec, reid_vec)
 
         # 预警冷却: 按 (摄像头, 人) 维度, 同人冷却期内不重复触发, 不同人各自立即触发
         now = time.time()
@@ -295,29 +302,28 @@ class AlertManager:
             print(f"[WARN] 数据库写入异常: {e}")
             return {'log_id': -1, 'success': False}
 
-    def _assign_person_key(self, feature_vec, feature_type):
-        """
-        给异常人员分配/复用 person_key (人脸优先 + ReID 兜底, 同类型余弦聚类)。
-        - 有特征向量: 与同类型已有簇比对, 相似度 >= 阈值 → 复用其 key; 否则新建簇。
-        - 无特征向量: 每次生成独立 key (不聚类)。
-        """
-        if feature_vec is None:
-            self._cluster_seq += 1
-            return f"anom_nofeat_{int(time.time() * 1000)}_{self._cluster_seq}"
-
-        vec = np.asarray(feature_vec, dtype=np.float32).reshape(-1)
-        norm = np.linalg.norm(vec)
+    @staticmethod
+    def _normalize(vec):
+        """L2 归一化特征向量; 输入 None 返回 None"""
+        if vec is None:
+            return None
+        v = np.asarray(vec, dtype=np.float32).reshape(-1)
+        norm = np.linalg.norm(v)
         if norm > 0:
-            vec = vec / (norm + 1e-8)
+            v = v / (norm + 1e-8)
+        return v
 
-        threshold = (self.FACE_CLUSTER_THRESHOLD if feature_type == 'face'
-                     else self.REID_CLUSTER_THRESHOLD)
-
+    def _match_or_create(self, vec, field, threshold):
+        """
+        在指定特征维度 (field='face_vec' 或 'reid_vec') 上找最佳匹配簇;
+        命中(余弦>=阈值)则复用其 key, 否则新建簇并存入该维度向量。
+        """
         best_key, best_sim = None, -1.0
         for key, c in self._clusters.items():
-            if c['feature_type'] != feature_type:
+            cv = c.get(field)
+            if cv is None:
                 continue
-            sim = float(np.dot(c['feature_vec'], vec))
+            sim = float(np.dot(cv, vec))
             if sim > best_sim:
                 best_sim, best_key = sim, key
 
@@ -326,11 +332,74 @@ class AlertManager:
 
         self._cluster_seq += 1
         new_key = f"anom_{int(time.time() * 1000)}_{self._cluster_seq}"
-        self._clusters[new_key] = {'feature_vec': vec, 'feature_type': feature_type}
+        self._clusters[new_key] = {'face_vec': None, 'reid_vec': None}
+        self._clusters[new_key][field] = vec
         return new_key
 
+    def _assign_person_key(self, face_vec, reid_vec):
+        """
+        给异常人员分配/复用 person_key (人脸优先 + ReID 兜底, 支持 face↔reid 跨类型合并)。
+        - 人脸簇和 ReID 簇分别用各自阈值聚类;
+        - 同一次检测同时命中人脸簇和 ReID 簇 → 判定为同一人, 合并 (人脸簇为规范 key)。
+        - 只有脸/只有全身 → 归入对应簇 (若带了另一路特征则补充存进该簇, 供后续合并)。
+        - 两路特征都无 → 每次独立 key。
+        """
+        face_vec = self._normalize(face_vec)
+        reid_vec = self._normalize(reid_vec)
+
+        face_key = (self._match_or_create(face_vec, 'face_vec', self.FACE_CLUSTER_THRESHOLD)
+                    if face_vec is not None else None)
+        reid_key = (self._match_or_create(reid_vec, 'reid_vec', self.REID_CLUSTER_THRESHOLD)
+                    if reid_vec is not None else None)
+
+        if face_key is None and reid_key is None:
+            self._cluster_seq += 1
+            return f"anom_nofeat_{int(time.time() * 1000)}_{self._cluster_seq}"
+
+        if face_key is None:
+            return reid_key
+
+        if reid_key is None:
+            # 只有脸命中 (没带 reid 或 reid 未命中): 若带了 reid 特征则补充进该簇
+            if reid_vec is not None and self._clusters[face_key].get('reid_vec') is None:
+                self._clusters[face_key]['reid_vec'] = reid_vec
+            return face_key
+
+        if face_key == reid_key:
+            return face_key
+
+        # 脸和全身分别命中不同簇 → 同一人, 合并 (人脸簇为规范 key)
+        return self._merge(reid_key, face_key)
+
+    def _merge(self, from_key, to_key):
+        """把 from_key 簇合并进 to_key 簇 (特征取并集), 并同步更新 DB 里 from_key 的旧预警记录"""
+        f = self._clusters.get(from_key)
+        t = self._clusters.get(to_key)
+        if f and t:
+            for field in ('face_vec', 'reid_vec'):
+                if t.get(field) is None and f.get(field) is not None:
+                    t[field] = f[field]
+        self._clusters.pop(from_key, None)
+        self._rekey_db(from_key, to_key)
+        return to_key
+
+    def _rekey_db(self, old_key, new_key):
+        """把 DB 中 old_key 的预警记录改归 new_key (跨类型合并到同一卡片)"""
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from db_mysql import HotelDatabase
+            db = HotelDatabase(**self.db_config)
+            if db.test_connection():
+                n = db.update_alert_person_key(old_key, new_key)
+                db.close()
+                if n:
+                    print(f"[INFO] 跨类型合并: {old_key} -> {new_key} (更新 {n} 条)")
+        except Exception as e:
+            print(f"[WARN] 跨类型合并写库失败: {e}")
+
     def _rebuild_clusters(self):
-        """从已有预警记录重建按人聚类 (重启后同一人仍归入同一 person_key)"""
+        """从已有预警记录重建按人聚类 (重启后同一人仍归入同一 person_key)。
+        同一 person_key 可同时拥有 face_vec 与 reid_vec (来自之前跨类型合并写库的两类记录)。"""
         try:
             sys.path.insert(0, str(Path(__file__).parent))
             from db_mysql import HotelDatabase
@@ -339,7 +408,7 @@ class AlertManager:
             if not db.test_connection():
                 db.close()
                 return
-            alerts = db.get_all_alerts(limit=10000)
+            alerts = db.get_all_alerts(limit=100000)
             db.close()
 
             max_seq = 0
@@ -351,11 +420,14 @@ class AlertManager:
                     vec = np.array(json.loads(a['feature_vec']), dtype=np.float32).reshape(-1)
                 except (json.JSONDecodeError, ValueError, TypeError):
                     continue
-                norm = np.linalg.norm(vec)
-                if norm > 0:
-                    vec = vec / (norm + 1e-8)
+                vec = self._normalize(vec)
+                if vec is None:
+                    continue
                 etype = a.get('embedding_type') or 'reid'
-                self._clusters.setdefault(key, {'feature_vec': vec, 'feature_type': etype})
+                field = 'face_vec' if etype == 'face' else 'reid_vec'
+                cl = self._clusters.setdefault(key, {'face_vec': None, 'reid_vec': None})
+                if cl[field] is None:
+                    cl[field] = vec
                 try:
                     max_seq = max(max_seq, int(key.rsplit('_', 1)[-1]))
                 except (ValueError, IndexError):

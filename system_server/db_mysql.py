@@ -222,6 +222,11 @@ class HotelDatabase:
         sql = "UPDATE alert_log SET handle_status = 1 WHERE person_key = %s"
         return self._execute(sql, (person_key,), fetch=False) > 0
 
+    def update_alert_person_key(self, old_key: str, new_key: str) -> int:
+        """把 person_key 从 old_key 改归 new_key (人脸↔ReID 跨类型合并用), 返回更新行数"""
+        sql = "UPDATE alert_log SET person_key = %s WHERE person_key = %s"
+        return self._execute(sql, (new_key, old_key), fetch=False)
+
     def get_unhandled_count(self) -> int:
         """获取未处理预警数量"""
         sql = "SELECT COUNT(*) as cnt FROM alert_log WHERE handle_status = 0"

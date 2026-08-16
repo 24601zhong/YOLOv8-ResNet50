@@ -222,7 +222,9 @@ def detection_loop():
                         person_id=match_result.get('person_id', -1),
                         person_info=match_result['person_info'],
                         feature_vec=match_result.get('feature_vec'),
-                        feature_type=match_result.get('feature_type')
+                        feature_type=match_result.get('feature_type'),
+                        face_feature_vec=match_result.get('face_feature_vec'),
+                        reid_feature_vec=match_result.get('reid_feature_vec')
                     )
                     system_stats['alerts_today'] += 1
                 else:
@@ -576,7 +578,9 @@ def api_detect():
                     alert_mgr.trigger_alert(
                         camera_id, frame, match['similarity'],
                         feature_vec=match.get('feature_vec'),
-                        feature_type=match.get('feature_type')
+                        feature_type=match.get('feature_type'),
+                        face_feature_vec=match.get('face_feature_vec'),
+                        reid_feature_vec=match.get('reid_feature_vec')
                     )
 
             result['detections'].append(det)
