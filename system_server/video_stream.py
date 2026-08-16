@@ -24,6 +24,18 @@ import cv2
 import torch
 
 
+def build_rtsp_url(ip, port=554, username=None, password=None, path=''):
+    """构造 RTSP 地址: rtsp://[user:pass@]ip:port/path"""
+    ip = str(ip).strip()
+    path = str(path or '').strip()
+    if path and not path.startswith('/'):
+        path = '/' + path
+    auth = ''
+    if username:
+        auth = f"{username}:{password or ''}@"
+    return f"rtsp://{auth}{ip}:{port}{path}"
+
+
 # ============================================================
 # 摄像头读取线程（规避 IO 阻塞）
 # ============================================================
@@ -34,11 +46,11 @@ class CameraStreamReader:
     支持 RTSP 网络摄像头和本地视频文件
     """
 
-    def __init__(self, source, camera_id, queue_size=2, skip_frame=2):
+    def __init__(self, source, camera_id, queue_size=1, skip_frame=2):
         """
         :param source: 视频源（RTSP地址或本地文件路径）
         :param camera_id: 摄像头编号
-        :param queue_size: 帧队列大小
+        :param queue_size: 帧队列大小（1 = 仅保留最新帧，降低延迟）
         :param skip_frame: 跳帧间隔（每N帧取1帧送入推理）
         """
         self.source = source
@@ -51,6 +63,11 @@ class CameraStreamReader:
         self.running = False
         self.frame_count = 0
         self.dropped_frames = 0
+
+        # 低延迟预览：始终保留最新帧（独立于检测队列）
+        self.latest_frame = None
+        self.latest_frame_id = 0
+        self.latest_lock = threading.Lock()
 
         # 判断视频源类型
         source_str = str(source) if not isinstance(source, str) else source
@@ -73,11 +90,25 @@ class CameraStreamReader:
 
     def start(self):
         """启动读取线程"""
-        self.cap = cv2.VideoCapture(self.source)
+        # RTSP 低延迟: FFMPEG 走 TCP + 关闭缓冲; 所有源限制内部缓冲为 1 帧
+        if self.stats['is_rtsp']:
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = \
+                'rtsp_transport;tcp|fflags;nobuffer|probesize;32|analyzeduration;0'
+            try:
+                self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+            except Exception:
+                self.cap = cv2.VideoCapture(self.source)
+        else:
+            self.cap = cv2.VideoCapture(self.source)
 
         if not self.cap.isOpened():
             print(f"[ERROR] 摄像头 {self.camera_id} 无法打开: {self.source}")
             return False
+
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
 
         self.stats['resolution'] = (
             int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -121,6 +152,11 @@ class CameraStreamReader:
             self.stats['total_frames_read'] += 1
             fps_counter += 1
 
+            # 更新最新帧（供低延迟预览，每一帧都更新）
+            with self.latest_lock:
+                self.latest_frame = frame.copy()
+                self.latest_frame_id = self.frame_count
+
             # FPS 计算（每1秒更新）
             current_time = time.time()
             if current_time - last_frame_time >= 1.0:
@@ -152,6 +188,13 @@ class CameraStreamReader:
         except queue.Empty:
             return None
 
+    def get_latest_frame(self):
+        """获取最新一帧（低延迟预览用，非阻塞，带锁）"""
+        with self.latest_lock:
+            if self.latest_frame is None:
+                return None, 0
+            return self.latest_frame.copy(), self.latest_frame_id
+
     def stop(self):
         """停止读取"""
         self.running = False
@@ -177,7 +220,7 @@ class YOLOPersonDetector:
     - 输出检测框 + 置信度 + ROI裁剪
     """
 
-    def __init__(self, model_path=None, conf_thres=0.25, iou_thres=0.45):
+    def __init__(self, model_path=None, conf_thres=0.4, iou_thres=0.45):
         """
         :param model_path: 模型权重路径（None则使用预训练）
         :param conf_thres: 置信度阈值

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>摄像头管理 - 酒店异常人员实时监控识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", sans-serif; background: #f0f2f5; }
+        .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 22px; font-weight: 500; }
+        .nav { display: flex; gap: 20px; }
+        .nav a { color: rgba(255,255,255,0.85); text-decoration: none; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover, .nav a.active { background: rgba(255,255,255,0.15); color: white; }
+        .container { padding: 30px 40px; max-width: 1200px; margin: 0 auto; }
+        .card { background: white; border-radius: 8px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 24px; }
+        .section-title { font-size: 20px; font-weight: 500; margin-bottom: 24px; color: #333; border-bottom: 2px solid #1a237e; padding-bottom: 10px; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #555; font-weight: 500; }
+        .form-group input, .form-group select { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #1a237e; }
+        .btn { padding: 10px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; }
+        .btn-primary { background: #1a237e; color: white; }
+        .btn-primary:hover { background: #283593; }
+        .btn-danger { background: #c62828; color: white; }
+        .btn-danger:hover { background: #d32f2f; }
+        .message { padding: 14px 20px; border-radius: 4px; margin-top: 20px; display: none; }
+        .message.success { background: #e8f5e9; color: #2e7d32; display: block; }
+        .message.error { background: #ffebee; color: #c62828; display: block; }
+        .camera-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
+        .camera-card { border: 1px solid #eee; border-radius: 8px; overflow: hidden; }
+        .camera-card img { width: 100%; height: 190px; object-fit: cover; background: #000; display: block; }
+        .camera-info { padding: 14px 16px; }
+        .camera-info .name { font-size: 16px; font-weight: 600; color: #333; }
+        .camera-info .meta { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.6; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-right: 6px; }
+        .badge.online { background: #e8f5e9; color: #2e7d32; }
+        .badge.offline { background: #ffebee; color: #c62828; }
+        .badge.rtsp { background: #e3f2fd; color: #1565c0; }
+        .badge.local { background: #f3e5f5; color: #6a1b9a; }
+        .camera-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 0 16px 14px; }
+        .empty { text-align: center; color: #999; padding: 40px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ 酒店异常人员实时监控识别系统</h1>
+        <div class="nav">
+            <a href="/">📊 仪表板</a>
+            <a href="/register">📝 入住登记</a>
+            <a href="/monitor">📹 实时监控</a>
+            <a href="/cameras" class="active">📹 摄像头</a>
+            <a href="/alerts">⚠️ 预警管理</a>
+            <a href="/persons">👥 人员管理</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="card">
+            <div class="section-title">➕ 添加摄像头</div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>名称</label>
+                    <input type="text" id="camName" placeholder="如: 大堂入口">
+                </div>
+                <div class="form-group">
+                    <label>位置</label>
+                    <input type="text" id="camLocation" placeholder="如: 一楼大堂">
+                </div>
+            </div>
+            <div class="form-group" style="max-width:400px;">
+                <label>视频源类型</label>
+                <select id="camType" onchange="toggleType()">
+                    <option value="local">🖥️ 本地摄像头 (本机 USB/内置)</option>
+                    <option value="rtsp">📡 RTSP 网络摄像头 (IP+端口+账号)</option>
+                </select>
+            </div>
+
+            <div id="localFields" class="form-row">
+                <div class="form-group">
+                    <label>摄像头编号 (index)</label>
+                    <input type="number" id="camIndex" value="0" min="0">
+                </div>
+            </div>
+
+            <div id="rtspFields" style="display:none;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>IP 地址 *</label>
+                        <input type="text" id="rtspIp" placeholder="如: 192.168.1.64">
+                    </div>
+                    <div class="form-group">
+                        <label>端口</label>
+                        <input type="number" id="rtspPort" value="554">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input type="text" id="rtspUser" placeholder="可选">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="text" id="rtspPass" placeholder="可选">
+                    </div>
+                </div>
+                <div class="form-group" style="max-width:400px;">
+                    <label>流路径</label>
+                    <input type="text" id="rtspPath" placeholder="如: /stream 或留空">
+                </div>
+            </div>
+
+            <div style="text-align:center; margin-top:8px;">
+                <button class="btn btn-primary" onclick="addCamera()" style="padding:12px 48px;">✅ 添加摄像头</button>
+            </div>
+            <div class="message" id="message"></div>
+        </div>
+
+        <div class="card">
+            <div class="section-title">📹 摄像头列表</div>
+            <div class="camera-grid" id="cameraGrid">
+                <div class="empty">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleType() {
+            const t = document.getElementById('camType').value;
+            document.getElementById('localFields').style.display = (t === 'local') ? 'grid' : 'none';
+            document.getElementById('rtspFields').style.display = (t === 'rtsp') ? 'block' : 'none';
+        }
+
+        function showMsg(text, ok) {
+            const m = document.getElementById('message');
+            m.className = 'message ' + (ok ? 'success' : 'error');
+            m.textContent = text;
+        }
+
+        async function addCamera() {
+            showMsg('', false);
+            const type = document.getElementById('camType').value;
+            const payload = {
+                name: document.getElementById('camName').value.trim(),
+                location: document.getElementById('camLocation').value.trim(),
+                source_type: type
+            };
+            if (type === 'local') {
+                payload.index = parseInt(document.getElementById('camIndex').value || '0', 10);
+            } else {
+                payload.ip = document.getElementById('rtspIp').value.trim();
+                payload.port = parseInt(document.getElementById('rtspPort').value || '554', 10);
+                payload.username = document.getElementById('rtspUser').value.trim();
+                payload.password = document.getElementById('rtspPass').value;
+                payload.path = document.getElementById('rtspPath').value.trim();
+                if (!payload.ip) { showMsg('请填写 RTSP 摄像头 IP 地址', false); return; }
+            }
+
+            try {
+                const res = await fetch('/api/cameras', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showMsg('✅ 摄像头已添加: ' + data.camera_id, true);
+                    document.getElementById('camName').value = '';
+                    document.getElementById('camLocation').value = '';
+                    document.getElementById('rtspIp').value = '';
+                    document.getElementById('rtspPass').value = '';
+                    loadCameras();
+                } else {
+                    showMsg('❌ ' + (data.message || '添加失败'), false);
+                }
+            } catch (e) {
+                showMsg('❌ 请求失败: ' + e.message, false);
+            }
+        }
+
+        async function deleteCamera(id) {
+            if (!confirm('确认删除摄像头 ' + id + ' ?')) return;
+            try {
+                await fetch('/api/cameras/' + id, { method: 'DELETE' });
+                loadCameras();
+            } catch (e) {
+                alert('删除失败: ' + e.message);
+            }
+        }
+
+        async function loadCameras() {
+            const grid = document.getElementById('cameraGrid');
+            try {
+                const res = await fetch('/api/cameras');
+                const cams = await res.json();
+                if (!cams || cams.length === 0) {
+                    grid.innerHTML = '<div class="empty">暂无摄像头，请先添加</div>';
+                    return;
+                }
+                grid.innerHTML = '';
+                cams.forEach(c => {
+                    const id = c.camera_id || c.id;
+                    const card = document.createElement('div');
+                    card.className = 'camera-card';
+                    const typeBadge = (c.source_type === 'rtsp') ? '<span class="badge rtsp">RTSP</span>'
+                        : (c.source_type === 'file') ? '<span class="badge local">视频文件</span>'
+                        : '<span class="badge local">本地</span>';
+                    const statusBadge = c.active ? '<span class="badge online">在线</span>' : '<span class="badge offline">离线</span>';
+                    const res = c.resolution ? (c.resolution[0] + 'x' + c.resolution[1]) : '--';
+                    const fps = c.fps ? c.fps.toFixed(1) : '--';
+                    card.innerHTML =
+                        '<img class="snap" src="/api/cameras/' + id + '/snapshot" alt="画面">' +
+                        '<div class="camera-info">' +
+                            '<div class="name">' + (c.name || id) + ' <span style="font-weight:normal;color:#999;font-size:12px;">(' + id + ')</span></div>' +
+                            '<div class="meta">' + statusBadge + typeBadge + '</div>' +
+                            '<div class="meta">位置: ' + (c.location || '--') + '</div>' +
+                            '<div class="meta">分辨率: ' + res + ' | FPS: ' + fps + '</div>' +
+                            '<div class="meta">源: ' + (c.source || '--') + '</div>' +
+                        '</div>' +
+                        '<div class="camera-actions">' +
+                            '<button class="btn btn-danger" onclick="deleteCamera(\'' + id + '\')">删除</button>' +
+                        '</div>';
+                    grid.appendChild(card);
+                });
+            } catch (e) {
+                grid.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+            }
+        }
+
+        // 周期刷新列表缩略图 + 状态
+        function refreshSnaps() {
+            document.querySelectorAll('.camera-card .snap').forEach(img => {
+                const src = img.src.split('?')[0];
+                img.src = src + '?t=' + Date.now();
+            });
+            loadCameras();
+        }
+
+        loadCameras();
+        setInterval(refreshSnaps, 3000);
+    </script>
+</body>
+</html>

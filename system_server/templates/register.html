@@ -22,7 +22,7 @@
         .form-group input:focus { outline: none; border-color: #1a237e; }
         .camera-section { background: #f5f5f5; border-radius: 8px; padding: 20px; margin-top: 24px; }
         .camera-container { position: relative; width: 100%; max-width: 640px; margin: 0 auto; }
-        #video { width: 100%; border-radius: 8px; background: #000; }
+        #video, #backendPreview { width: 100%; border-radius: 8px; background: #000; }
         #canvas { display: none; }
         .camera-controls { display: flex; justify-content: center; gap: 16px; margin-top: 16px; }
         .btn { padding: 10px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; }
@@ -47,6 +47,7 @@
             <a href="/">📊 仪表板</a>
             <a href="/register" class="active">📝 入住登记</a>
             <a href="/monitor">📹 实时监控</a>
+            <a href="/cameras">📹 摄像头</a>
             <a href="/alerts">⚠️ 预警管理</a>
             <a href="/persons">👥 人员管理</a>
         </div>
@@ -77,8 +78,17 @@
                     <div style="text-align:center; margin-bottom:16px; color:#555; font-weight:500;">
                         📸 人脸抓拍 (可选 - 用于身份特征录入)
                     </div>
+
+                    <div class="form-group" style="max-width:420px; margin:0 auto 16px;">
+                        <label>视频源</label>
+                        <select id="cameraSource" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:4px; font-size:14px;">
+                            <option value="browser">🖥️ 本机浏览器摄像头</option>
+                        </select>
+                    </div>
+
                     <div class="camera-container">
                         <video id="video" autoplay></video>
+                        <img id="backendPreview" alt="后端摄像头画面" style="display:none;">
                         <canvas id="canvas" width="640" height="480"></canvas>
                     </div>
                     <div class="camera-controls">
@@ -103,35 +113,98 @@
     <script>
         let stream = null;
         let capturedImage = null;
+        let previewTimer = null;
+        let backendCamId = null;
 
-        async function startCamera() {
+        // 加载后端摄像头列表到下拉框
+        async function loadCameras() {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
-                document.getElementById('video').srcObject = stream;
-            } catch (err) {
-                alert('无法访问摄像头: ' + err.message);
+                const res = await fetch('/api/cameras');
+                const cams = await res.json();
+                const sel = document.getElementById('cameraSource');
+                (cams || []).forEach(c => {
+                    const id = c.camera_id || c.id;
+                    const opt = document.createElement('option');
+                    opt.value = 'cam:' + id;
+                    opt.textContent = '📷 ' + (c.name || id) + ' (' + (c.source_type || '') + ')';
+                    sel.appendChild(opt);
+                });
+            } catch (e) {
+                console.warn('加载摄像头列表失败', e);
             }
         }
 
+        async function startCamera() {
+            stopPreview();
+            const sel = document.getElementById('cameraSource').value;
+            const video = document.getElementById('video');
+            const img = document.getElementById('backendPreview');
+
+            if (sel === 'browser') {
+                // 浏览器本机摄像头: 仅在 localhost / HTTPS 安全上下文可用
+                if (!window.isSecureContext || !navigator.mediaDevices) {
+                    alert('当前通过局域网 IP (HTTP) 访问，浏览器摄像头被禁用。\n请在上方「视频源」中选择一个后端摄像头（本地/RTSP）。');
+                    return;
+                }
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+                    img.style.display = 'none';
+                    video.style.display = 'block';
+                    video.srcObject = stream;
+                } catch (err) {
+                    alert('无法访问浏览器摄像头: ' + err.message);
+                }
+            } else {
+                backendCamId = sel.replace('cam:', '');
+                video.style.display = 'none';
+                video.srcObject = null;
+                img.style.display = 'block';
+                refreshSnapshot();
+                previewTimer = setInterval(refreshSnapshot, 500);
+            }
+        }
+
+        function refreshSnapshot() {
+            const img = document.getElementById('backendPreview');
+            if (backendCamId) {
+                img.src = '/api/cameras/' + backendCamId + '/snapshot?t=' + Date.now();
+            }
+        }
+
+        function stopPreview() {
+            if (previewTimer) { clearInterval(previewTimer); previewTimer = null; }
+        }
+
         function stopCamera() {
+            stopPreview();
             if (stream) {
                 stream.getTracks().forEach(t => t.stop());
                 stream = null;
             }
-            document.getElementById('video').srcObject = null;
+            const video = document.getElementById('video');
+            const img = document.getElementById('backendPreview');
+            video.srcObject = null;
+            video.style.display = 'block';
+            img.style.display = 'none';
+            img.src = '';
         }
 
         function capturePhoto() {
-            if (!stream) {
-                alert('请先开启摄像头');
-                return;
-            }
             const video = document.getElementById('video');
+            const img = document.getElementById('backendPreview');
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, 640, 480);
-            capturedImage = canvas.toDataURL('image/jpeg', 0.8);
+            const src = document.getElementById('cameraSource').value;
 
+            if (src === 'browser') {
+                if (!stream) { alert('请先开启摄像头'); return; }
+                ctx.drawImage(video, 0, 0, 640, 480);
+            } else {
+                if (!backendCamId || img.style.display === 'none') { alert('请先选择后端摄像头并开启'); return; }
+                ctx.drawImage(img, 0, 0, 640, 480);
+            }
+
+            capturedImage = canvas.toDataURL('image/jpeg', 0.8);
             document.getElementById('previewContainer').innerHTML =
                 '<img src="' + capturedImage + '" alt="抓拍预览">';
         }
@@ -174,6 +247,8 @@
                 msg.textContent = '❌ 请求失败: ' + err.message;
             }
         });
+
+        loadCameras();
     </script>
 </body>
 </html>

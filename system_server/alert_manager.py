@@ -78,6 +78,10 @@ class AlertManager:
         self.popup_cooldown = 5.0  # 秒
         self.last_popup_time = 0
 
+        # 预警冷却（防止同一摄像头每帧都触发完整预警, 拖垮检测循环）
+        self.alert_cooldown = 5.0  # 秒
+        self._last_alert_time = {}  # camera_id -> 上次触发时间戳
+
         print(f"[INFO] 预警管理器初始化完成")
         print(f"[INFO] 截图保存目录: {self.output_dir}")
 
@@ -92,6 +96,12 @@ class AlertManager:
         :param person_info: 人员信息
         :return: 预警记录字典
         """
+        # 预警冷却: 同一摄像头在冷却期内不重复触发, 避免"异常"帧每帧都写库/存图拖垮检测循环
+        now = time.time()
+        if now - self._last_alert_time.get(camera_id, 0) < self.alert_cooldown:
+            return None
+        self._last_alert_time[camera_id] = now
+
         alert_time = datetime.now()
 
         # Step 1: 保存截图
@@ -125,7 +135,15 @@ class AlertManager:
 
         # 添加到历史
         self.alert_history.append(alert_record)
-        self.alert_queue.put(alert_record)
+        # 非阻塞入队: 队列满则丢最旧一条, 防止阻塞式 put() 在队列满时死锁检测循环
+        try:
+            self.alert_queue.put_nowait(alert_record)
+        except queue.Full:
+            try:
+                self.alert_queue.get_nowait()
+                self.alert_queue.put_nowait(alert_record)
+            except queue.Empty:
+                pass
 
         # 更新统计
         self.stats['total_alerts'] += 1

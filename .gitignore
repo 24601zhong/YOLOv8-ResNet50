@@ -68,3 +68,6 @@ output/*.json
 *.bak
 *.orig
 ssh_key.txt
+
+# 运行时摄像头配置 (可能含 RTSP 密码)
+config/

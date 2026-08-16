@@ -40,6 +40,7 @@
             <a href="/">📊 仪表板</a>
             <a href="/register">📝 入住登记</a>
             <a href="/monitor">📹 实时监控</a>
+            <a href="/cameras">📹 摄像头</a>
             <a href="/alerts">⚠️ 预警管理</a>
             <a href="/persons" class="active">👥 人员管理</a>
         </div>
@@ -74,7 +75,7 @@
                     <tr>
                         <td>
                             {% if person.face_img_path %}
-                            <img src="{{ person.face_img_path }}" class="avatar" alt="">
+                            <img src="{{ person.face_img_url }}" class="avatar" alt="">
                             {% else %}
                             <div class="avatar-placeholder">👤</div>
                             {% endif %}

@@ -25,14 +25,14 @@ from pathlib import Path
 
 import cv2
 import torch
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from system_server.db_mysql import HotelDatabase
-from system_server.video_stream import YOLOPersonDetector, MultiCameraManager
+from system_server.video_stream import YOLOPersonDetector, MultiCameraManager, build_rtsp_url
 from system_server.reid_match import ReidMatchingPipeline
 from system_server.alert_manager import AlertManager
 from system_server.face_match import (
@@ -65,6 +65,16 @@ system_running = False
 # MJPEG 帧缓冲区
 frame_buffers = {}  # camera_id -> {'frame', 'timestamp', 'detections'}
 frame_lock = threading.Lock()
+
+# 摄像头注册表 (运行时管理 + JSON 持久化)
+camera_registry = {}  # camera_id -> {camera_id, name, location, source_type, source}
+camera_registry_lock = threading.Lock()
+
+# 最新检测结果缓存 (camera_id -> [detections])，供预览线程异步叠加
+latest_detections = {}
+detection_lock = threading.Lock()
+
+CAMERAS_CONFIG = PROJECT_ROOT / 'config' / 'cameras.json'
 
 # 系统统计
 system_stats = {
@@ -119,12 +129,48 @@ def init_system(db_config, yolo_model_path, reid_model_path):
     print("=" * 60 + "\n")
 
 
-def add_camera(source, camera_id):
-    """添加摄像头"""
+def load_cameras():
+    """从 JSON 读取摄像头配置列表 (不直接注册, 由 main 逐个 add_camera)"""
+    if not CAMERAS_CONFIG.exists():
+        return []
+    try:
+        with open(CAMERAS_CONFIG, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data.get('cameras', []) if isinstance(data, dict) else data
+    except Exception as e:
+        print(f"[WARN] 摄像头配置加载失败: {e}")
+        return []
+
+
+def save_cameras():
+    """持久化摄像头配置到 JSON"""
+    try:
+        CAMERAS_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        with camera_registry_lock:
+            cams = list(camera_registry.values())
+        with open(CAMERAS_CONFIG, 'w', encoding='utf-8') as f:
+            json.dump({'cameras': cams}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[WARN] 摄像头配置保存失败: {e}")
+
+
+def add_camera(source, camera_id, name=None, location='', source_type='local'):
+    """添加摄像头并注册元数据"""
     global camera_mgr
     if camera_mgr is None:
         camera_mgr = MultiCameraManager(yolo_detector, skip_frame=2)
-    return camera_mgr.add_camera(source, camera_id)
+    ok = camera_mgr.add_camera(source, camera_id)
+    if ok:
+        with camera_registry_lock:
+            camera_registry[camera_id] = {
+                'camera_id': camera_id,
+                'name': name or camera_id,
+                'location': location,
+                'source_type': source_type,
+                'source': str(source),
+            }
+        save_cameras()
+    return ok
 
 
 def detection_loop():
@@ -177,14 +223,17 @@ def detection_loop():
 
             processed_detections.append(det)
 
-        # 更新 MJPEG 帧
+        # 用检测帧直接标注写入 MJPEG 缓冲 (帧与框同步, 避免"最新画面+旧框"错位)
         update_mjpeg_frame(camera_id, frame, processed_detections)
+        # 同时缓存检测结果 (供 snapshot 等复用)
+        with detection_lock:
+            latest_detections[camera_id] = processed_detections
         system_stats['total_detections'] += len(processed_detections)
         system_stats['online_cameras'] = len(frame_buffers)
 
 
-def update_mjpeg_frame(camera_id, frame, detections):
-    """更新 MJPEG 帧缓冲区"""
+def annotate_frame(frame, camera_id, detections):
+    """在帧上叠加检测框/标签，返回标注后的帧（纯函数）"""
     annotated = frame.copy()
 
     for det in detections:
@@ -211,10 +260,42 @@ def update_mjpeg_frame(camera_id, frame, detections):
     cv2.putText(annotated, info, (10, h - 10),
                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+    return annotated
+
+
+def update_mjpeg_frame(camera_id, frame, detections):
+    """标注帧并写入 MJPEG 缓冲区"""
+    annotated = annotate_frame(frame, camera_id, detections)
     with frame_lock:
         frame_buffers[camera_id] = {
             'frame': annotated, 'timestamp': time.time(), 'detections': detections
         }
+
+
+def preview_loop():
+    """兜底预览循环: 标注帧由 detection_loop 在检测完成后写入 (帧与框同步)。
+    仅当某摄像头尚无标注帧、或标注帧超过 2 秒未更新时, 推一张最新裸帧兜底,
+    避免黑屏/卡死, 同时不再把"最新画面"和"旧检测框"错位拼接。"""
+    while system_running:
+        if camera_mgr is None:
+            time.sleep(0.1)
+            continue
+
+        try:
+            for cam_id, reader in list(camera_mgr.cameras.items()):
+                with frame_lock:
+                    buf = frame_buffers.get(cam_id)
+                stale = (buf is None or buf.get('frame') is None
+                         or (time.time() - buf.get('timestamp', 0)) > 2.0)
+                if not stale:
+                    continue
+                frame, _fid = reader.get_latest_frame()
+                if frame is not None:
+                    update_mjpeg_frame(cam_id, frame, [])
+        except Exception as e:
+            print(f"[WARN] 预览循环异常: {e}")
+
+        time.sleep(0.03)
 
 
 # ============================================================
@@ -261,6 +342,11 @@ def register_page():
     return render_template('register.html')
 
 
+@app.route('/cameras')
+def cameras_page():
+    return render_template('cameras.html')
+
+
 @app.route('/monitor')
 def monitor_page():
     cameras = [
@@ -280,6 +366,9 @@ def alerts_page():
         alerts = db.get_all_alerts(
             status=int(status_filter) if status_filter else None
         )
+        for a in alerts:
+            if a.get('screenshot_path'):
+                a['screenshot_url'] = '/output/alert_screenshots/' + os.path.basename(a['screenshot_path'])
     return render_template('alerts.html', alerts=alerts)
 
 
@@ -289,7 +378,16 @@ def persons_page():
     persons = []
     if db:
         persons = db.search_persons(search) if search else db.get_all_persons()
+        for p in persons:
+            if p.get('face_img_path'):
+                p['face_img_url'] = '/output/alert_screenshots/' + os.path.basename(p['face_img_path'])
     return render_template('persons.html', persons=persons, search=search)
+
+
+@app.route('/output/<path:filename>')
+def serve_output(filename):
+    """服务 output/ 下的静态文件 (人员头像 / 预警截图)"""
+    return send_from_directory(str(PROJECT_ROOT / 'output'), filename)
 
 
 # ============================================================
@@ -308,12 +406,96 @@ def api_stats():
 
 @app.route('/api/cameras')
 def api_cameras():
-    return jsonify([
-        {'id': 'CAM_001', 'name': '大堂入口', 'location': '一楼大堂'},
-        {'id': 'CAM_002', 'name': '电梯厅', 'location': '一楼电梯厅'},
-        {'id': 'CAM_003', 'name': '走廊A区', 'location': '二楼走廊'},
-        {'id': 'CAM_004', 'name': '后门出口', 'location': '后门'}
-    ])
+    """摄像头列表（真实连接 + 元数据）"""
+    cameras = []
+    with camera_registry_lock:
+        reg = dict(camera_registry)
+    readers = camera_mgr.cameras if camera_mgr else {}
+    for cam_id, meta in reg.items():
+        reader = readers.get(cam_id)
+        cam = dict(meta)
+        cam['id'] = cam_id  # 兼容前端旧字段
+        cam['active'] = reader is not None and reader.running
+        if reader is not None:
+            stats = reader.get_stats()
+            cam['resolution'] = stats.get('resolution')
+            cam['fps'] = stats.get('fps')
+            cam['is_rtsp'] = stats.get('is_rtsp')
+            cam['is_camera'] = stats.get('is_camera')
+        cameras.append(cam)
+    return jsonify(cameras)
+
+
+@app.route('/api/cameras', methods=['POST'])
+def api_add_camera():
+    """添加摄像头（本地 index 或 RTSP ip/port/user/pass）"""
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    location = (data.get('location') or '').strip()
+    source_type = data.get('source_type', 'local')
+
+    if source_type == 'rtsp':
+        ip = (data.get('ip') or '').strip()
+        if not ip:
+            return jsonify({'success': False, 'message': '缺少 IP 地址'}), 400
+        try:
+            port = int(data.get('port', 554))
+        except (TypeError, ValueError):
+            port = 554
+        username = (data.get('username') or '').strip() or None
+        password = data.get('password') or None
+        path = (data.get('path') or '').strip()
+        source = build_rtsp_url(ip, port, username, password, path)
+    else:
+        try:
+            source = int(data.get('index', 0))
+        except (TypeError, ValueError):
+            source = 0
+
+    base_id = (data.get('camera_id') or '').strip() or f"CAM_{int(time.time() * 1000) % 100000:05d}"
+    camera_id = base_id
+    i = 1
+    while camera_id in camera_registry:
+        camera_id = f"{base_id}_{i}"
+        i += 1
+
+    ok = add_camera(source, camera_id, name=name, location=location, source_type=source_type)
+    if ok:
+        return jsonify({'success': True, 'camera_id': camera_id, 'message': '摄像头已添加'})
+    return jsonify({'success': False, 'message': f'无法打开摄像头: {source}'}), 500
+
+
+@app.route('/api/cameras/<camera_id>', methods=['DELETE'])
+def api_remove_camera(camera_id):
+    """移除摄像头"""
+    global camera_mgr
+    if camera_mgr is not None:
+        camera_mgr.remove_camera(camera_id)
+    with camera_registry_lock:
+        removed = camera_registry.pop(camera_id, None) is not None
+    with frame_lock:
+        frame_buffers.pop(camera_id, None)
+    with detection_lock:
+        latest_detections.pop(camera_id, None)
+    if removed:
+        save_cameras()
+    return jsonify({'success': True})
+
+
+@app.route('/api/cameras/<camera_id>/snapshot')
+def api_camera_snapshot(camera_id):
+    """抓取摄像头最新帧（JPEG，供登记页抓拍/预览）"""
+    reader = camera_mgr.cameras.get(camera_id) if camera_mgr else None
+    if reader is None:
+        return jsonify({'error': '摄像头不存在'}), 404
+    frame, _ = reader.get_latest_frame()
+    if frame is None:
+        return jsonify({'error': '暂无画面'}), 503
+    with detection_lock:
+        dets = latest_detections.get(camera_id, [])
+    annotated = annotate_frame(frame, camera_id, dets) if dets else frame
+    _, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return Response(jpeg.tobytes(), mimetype='image/jpeg')
 
 
 @app.route('/api/detect', methods=['POST'])
@@ -399,20 +581,35 @@ def api_register():
                 face_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reg_{id_card}_{ts}.jpg")
                 cv2.imwrite(face_path, img)
 
-                # ReID 全身特征 (兜底)
-                feature = reid_pipeline.extractor.extract(img)
+                # 先裁出登记主体 (行人框), 与检测链路对齐
+                person_crop = img
+                if yolo_detector is not None:
+                    try:
+                        dets = yolo_detector.detect(img)
+                        if dets:
+                            bbox = max(dets, key=lambda d: (d['bbox'][2]-d['bbox'][0])*(d['bbox'][3]-d['bbox'][1]))['bbox']
+                            x1, y1, x2, y2 = [int(v) for v in bbox]
+                            if x2 > x1 and y2 > y1:
+                                person_crop = img[y1:y2, x1:x2]
+                    except Exception as e:
+                        print(f"[WARN] 行人检测失败(回退整图): {e}")
+
+                # ReID 全身特征 (兜底): 从行人 crop 提取, 与检测时一致
+                feature = reid_pipeline.extractor.extract(person_crop)
                 feature_vec = json.dumps(feature.tolist())
 
-                # 人脸特征 (512维): 检测脸 + 5点对齐; 检不到脸则留空, 不阻断登记
+                # 人脸特征 (512维): 优先在行人 crop 上检测脸 + 5点对齐; 检不到则回退整图
                 if fused_pipeline is not None:
                     try:
                         fp = fused_pipeline.face_pipeline
-                        faces = fp.detector.detect(img)
-                        if faces:
-                            aligned = align_face(img, faces[0]['keypoints'])
-                            face_img = aligned if aligned is not None else faces[0]['crop']
-                            face_emb = fp.extractor.extract(face_img)
-                            face_vec = json.dumps(face_emb.tolist())
+                        for src in (person_crop, img):
+                            faces = fp.detector.detect(src)
+                            if faces:
+                                aligned = align_face(src, faces[0]['keypoints'])
+                                face_img = aligned if aligned is not None else faces[0]['crop']
+                                face_emb = fp.extractor.extract(face_img)
+                                face_vec = json.dumps(face_emb.tolist())
+                                break
                     except Exception as e:
                         print(f"[WARN] 人脸特征提取失败(不阻断登记): {e}")
 
@@ -509,24 +706,37 @@ def main():
     # 初始化系统
     init_system(db_config, args.yolo_model, args.model)
 
-    # 添加摄像头
-    if args.video:
-        add_camera(args.video, 'CAM_001')
-    elif args.rtsp:
-        add_camera('rtsp://localhost:554/stream', 'CAM_001')
+    # 加载已保存的摄像头配置（持久化恢复）
+    saved = load_cameras()
+    if saved:
+        for cam in saved:
+            src = cam.get('source')
+            if cam.get('source_type') == 'local' and isinstance(src, str) and src.isdigit():
+                src = int(src)
+            add_camera(src, cam.get('camera_id'), name=cam.get('name'),
+                       location=cam.get('location'), source_type=cam.get('source_type'))
     else:
-        # 默认使用本地摄像头或测试视频
-        test_video = PROJECT_ROOT / 'test_video' / 'hotel_raw' / 'demo.mp4'
-        if test_video.exists():
-            add_camera(str(test_video), 'CAM_001')
+        # 默认: 本地摄像头或测试视频
+        if args.video:
+            add_camera(args.video, 'CAM_001', name='测试视频', source_type='file')
+        elif args.rtsp:
+            add_camera('rtsp://localhost:554/stream', 'CAM_001', name='RTSP 摄像头', source_type='rtsp')
         else:
-            add_camera(0, 'CAM_001')  # 本地摄像头
+            test_video = PROJECT_ROOT / 'test_video' / 'hotel_raw' / 'demo.mp4'
+            if test_video.exists():
+                add_camera(str(test_video), 'CAM_001', name='演示视频', source_type='file')
+            else:
+                add_camera(0, 'CAM_001', name='本地摄像头', source_type='local')
 
     # 启动检测线程
     det_thread = threading.Thread(target=detection_loop, daemon=True)
     det_thread.start()
 
-    # 启动摄像头读取
+    # 启动预览线程（低延迟 MJPEG，独立于检测）
+    preview_thread = threading.Thread(target=preview_loop, daemon=True)
+    preview_thread.start()
+
+    # 启动摄像头读取 + 检测循环
     if camera_mgr:
         read_thread = threading.Thread(
             target=camera_mgr.start_detection_loop, daemon=True

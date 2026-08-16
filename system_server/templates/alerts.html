@@ -43,6 +43,7 @@
             <a href="/">📊 仪表板</a>
             <a href="/register">📝 入住登记</a>
             <a href="/monitor">📹 实时监控</a>
+            <a href="/cameras">📹 摄像头</a>
             <a href="/alerts" class="active">⚠️ 预警管理</a>
             <a href="/persons">👥 人员管理</a>
         </div>
@@ -76,9 +77,9 @@
                         <td>{{ "%.3f"|format(alert.similarity or 0) }}</td>
                         <td>
                             {% if alert.screenshot_path %}
-                            <img src="/output/alert_screenshots/{{ alert.screenshot_path.split('/')[-1] }}"
+                            <img src="{{ alert.screenshot_url }}"
                                  class="screenshot-thumb"
-                                 onclick="viewScreenshot('{{ alert.screenshot_path }}')"
+                                 onclick="viewScreenshot('{{ alert.screenshot_url }}')"
                                  alt="预警截图">
                             {% else %}
                             无截图
@@ -153,7 +154,7 @@
         }
 
         function viewScreenshot(path) {
-            document.getElementById('modalImage').src = '/output/alert_screenshots/' + path.split('/')[-1];
+            document.getElementById('modalImage').src = path;
             document.getElementById('imageModal').style.display = 'flex';
         }
 

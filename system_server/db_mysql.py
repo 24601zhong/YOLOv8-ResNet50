@@ -6,6 +6,7 @@
 
 import os
 import json
+import threading
 import pymysql
 import pymysql.cursors
 from datetime import datetime
@@ -31,6 +32,10 @@ class HotelDatabase:
             'ssl_disabled': True
         }
         self._conn = None
+        # pymysql 连接非线程安全; 全局 db 单例被 Flask 多线程并发访问时,
+        # 会导致 "Packet sequence number wrong" / "read of closed file"。
+        # 用锁串行化同一实例的 DB 操作 (不同实例各自独立连接, 互不影响)。
+        self._lock = threading.Lock()
 
     def _get_connection(self):
         """获取数据库连接"""
@@ -40,29 +45,31 @@ class HotelDatabase:
 
     def _execute(self, sql, params=None, fetch=True):
         """执行SQL语句"""
-        conn = self._get_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, params or ())
-                if fetch:
-                    return cursor.fetchall()
-                conn.commit()
-                return cursor.rowcount
-        except Exception as e:
-            conn.rollback()
-            raise e
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, params or ())
+                    if fetch:
+                        return cursor.fetchall()
+                    conn.commit()
+                    return cursor.rowcount
+            except Exception as e:
+                conn.rollback()
+                raise e
 
     def _execute_insert(self, sql, params=None):
         """执行 INSERT 并返回自增主键 ID"""
-        conn = self._get_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, params or ())
-                conn.commit()
-                return cursor.lastrowid
-        except Exception as e:
-            conn.rollback()
-            raise e
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, params or ())
+                    conn.commit()
+                    return cursor.lastrowid
+            except Exception as e:
+                conn.rollback()
+                raise e
 
     # ========================================================
     # person_info 表操作
