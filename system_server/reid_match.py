@@ -53,7 +53,7 @@ class ReidFeatureExtractor:
         self._load_model(model_path)
 
         # 图像预处理参数（与训练一致）
-        self.img_h = 256
+        self.img_h = 384
         self.img_w = 128
         self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -66,15 +66,16 @@ class ReidFeatureExtractor:
     def _load_model(self, model_path):
         """加载改进 ResNet50 模型"""
         try:
-            sys.path.insert(0, str(PROJECT_ROOT / 'resnet50_reid'))
-            from model import ImprovedResNet50ReID
+            sys.path.insert(0, str(PROJECT_ROOT / 'resnet50_reid_train'))
+            from model_v3 import IBNetResNet50
 
-            self.model = ImprovedResNet50ReID(num_classes=1000, feat_dim=2048)
+            self.model = IBNetResNet50(num_classes=297, use_cbam=True, use_dilation=True,
+                                       gem_p_init=3.0, arc_scale=30.0, arc_margin=0.3)
             self.model.to(self.device)
             self.model.eval()
 
             if model_path and Path(model_path).exists():
-                state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
+                state_dict = torch.load(model_path, map_location=self.device, weights_only=False)
                 if 'model_state_dict' in state_dict:
                     state_dict = state_dict['model_state_dict']
 
@@ -86,7 +87,7 @@ class ReidFeatureExtractor:
                         loaded += 1
 
                 self.model.load_state_dict(model_dict)
-                print(f"[INFO] 加载 ResNet50 权重: {model_path} ({loaded} 参数)")
+                print(f"[INFO] 加载 IBNetResNet50 V3 权重: {model_path} ({loaded} 参数)")
             else:
                 print("[WARN] 未指定模型权重，使用随机初始化（演示模式）")
 
@@ -132,7 +133,7 @@ class ReidFeatureExtractor:
 
         # 推理
         with torch.no_grad():
-            feature = self.model.extract_feature(img)
+            feature = self.model(img, return_feature=True)
 
         feature = feature.squeeze(0).cpu().numpy()
         return feature
@@ -202,7 +203,7 @@ class FeatureDatabase:
             'host': 'localhost',
             'port': 3306,
             'user': 'root',
-            'password': 'root',
+            'password': '123456',
             'database': 'hotel_security'
         }
 

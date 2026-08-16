@@ -23,6 +23,7 @@ CREATE TABLE person_info (
   check_in_time DATETIME NOT NULL COMMENT '入住时间',
   check_out_time DATETIME DEFAULT NULL COMMENT '离店时间',
   feature_vec TEXT COMMENT '2048维行人特征向量(JSON数组存储)',
+  face_vec TEXT COMMENT '512维人脸特征向量(JSON数组存储)',
   face_img_path VARCHAR(255) COMMENT '登记抓拍图片路径',
   UNIQUE INDEX uk_id_card (id_card) COMMENT '身份证唯一索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='住客信息表';

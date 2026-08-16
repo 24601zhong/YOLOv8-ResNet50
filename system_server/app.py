@@ -35,6 +35,9 @@ from system_server.db_mysql import HotelDatabase
 from system_server.video_stream import YOLOPersonDetector, MultiCameraManager
 from system_server.reid_match import ReidMatchingPipeline
 from system_server.alert_manager import AlertManager
+from system_server.face_match import (
+    FaceFeatureDatabase, FaceMatchingPipeline, FusedMatchingPipeline, align_face,
+)
 
 
 # ============================================================
@@ -54,6 +57,7 @@ Path(app.config['UPLOAD_FOLDER']).mkdir(parents=True, exist_ok=True)
 db = None
 yolo_detector = None
 reid_pipeline = None
+fused_pipeline = None
 alert_mgr = None
 camera_mgr = None
 system_running = False
@@ -76,7 +80,7 @@ system_stats = {
 
 def init_system(db_config, yolo_model_path, reid_model_path):
     """初始化全部系统组件"""
-    global db, yolo_detector, reid_pipeline, alert_mgr, camera_mgr, system_running
+    global db, yolo_detector, reid_pipeline, fused_pipeline, alert_mgr, camera_mgr, system_running
 
     print("\n" + "=" * 60)
     print("酒店异常人员实时监控识别系统 - 初始化")
@@ -85,21 +89,27 @@ def init_system(db_config, yolo_model_path, reid_model_path):
     # 1. 数据库
     db = HotelDatabase(**db_config)
     if db.test_connection():
-        print("[1/4] ✓ MySQL 数据库连接成功")
+        print("[1/5] [OK] MySQL 数据库连接成功")
     else:
-        print("[1/4] ⚠ MySQL 连接失败，使用演示模式")
+        print("[1/5] [WARN] MySQL 连接失败，使用演示模式")
 
     # 2. YOLO 检测器
     yolo_detector = YOLOPersonDetector(model_path=yolo_model_path)
-    print(f"[2/4] ✓ YOLO 检测器就绪 (设备: {yolo_detector.device})")
+    print(f"[2/5] [OK] YOLO 检测器就绪 (设备: {yolo_detector.device})")
 
     # 3. ReID 流水线
     reid_pipeline = ReidMatchingPipeline(model_path=reid_model_path, db_config=db_config)
-    print(f"[3/4] ✓ ReID 流水线就绪 (特征库: {reid_pipeline.feature_db.size()} 人)")
+    print(f"[3/5] [OK] ReID 流水线就绪 (特征库: {reid_pipeline.feature_db.size()} 人)")
 
-    # 4. 预警管理器
+    # 4. 人脸流水线 + 融合 (人脸优先 + ReID 兜底)
+    face_db = FaceFeatureDatabase(db_config=db_config)
+    face_pipeline = FaceMatchingPipeline(face_db=face_db, threshold=0.4)
+    fused_pipeline = FusedMatchingPipeline(face_pipeline=face_pipeline, reid_pipeline=reid_pipeline)
+    print(f"[4/5] [OK] 融合流水线就绪 (人脸优先 + ReID 兜底, 人脸库: {face_db.size()} 人)")
+
+    # 5. 预警管理器
     alert_mgr = AlertManager(output_dir=app.config['UPLOAD_FOLDER'], db_config=db_config)
-    print("[4/4] ✓ 预警管理器就绪")
+    print("[5/5] [OK] 预警管理器就绪")
 
     system_running = True
     system_stats['is_running'] = True
@@ -143,14 +153,16 @@ def detection_loop():
         processed_detections = []
 
         for det in raw_detections:
-            roi = det.get('roi')
-            if roi is not None and roi.size > 0:
-                match_result = reid_pipeline.process(roi)
+            bbox = det.get('bbox')
+            if bbox is not None:
+                # 人脸优先 + ReID 兜底 融合匹配 (原分辨率帧 + 行人框)
+                match_result = fused_pipeline.process(frame, bbox)
                 det['is_matched'] = match_result['is_matched']
                 det['is_anomaly'] = match_result['is_anomaly']
                 det['similarity'] = match_result['similarity']
                 det['person_name'] = match_result['person_info'].get('name', 'Guest')
                 det['person_room'] = match_result['person_info'].get('room_num', '')
+                det['matched_by'] = match_result.get('matched_by', 'reid')
 
                 if match_result['is_anomaly']:
                     alert_mgr.trigger_alert(
@@ -327,16 +339,17 @@ def api_detect():
         # YOLO 检测
         detections = yolo_detector.detect(frame)
 
-        # ReID 匹配（取第一个行人）
+        # 融合匹配 (人脸优先 + ReID 兜底)
         result = {'camera_id': camera_id, 'detections': []}
         for det in detections:
-            roi = det.get('roi')
-            if roi is not None and roi.size > 0:
-                match = reid_pipeline.process(roi)
+            bbox = det.get('bbox')
+            if bbox is not None:
+                match = fused_pipeline.process(frame, bbox)
                 det['is_matched'] = match['is_matched']
                 det['is_anomaly'] = match['is_anomaly']
                 det['similarity'] = match['similarity']
                 det['person_name'] = match['person_info'].get('name', '')
+                det['matched_by'] = match.get('matched_by', 'reid')
 
                 if match['is_anomaly']:
                     alert_mgr.trigger_alert(camera_id, frame, match['similarity'])
@@ -370,6 +383,7 @@ def api_register():
             return jsonify({'success': False, 'message': '身份证已登记'}), 409
 
     feature_vec = None
+    face_vec = None
     face_path = None
 
     if face_b64:
@@ -385,17 +399,37 @@ def api_register():
                 face_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reg_{id_card}_{ts}.jpg")
                 cv2.imwrite(face_path, img)
 
+                # ReID 全身特征 (兜底)
                 feature = reid_pipeline.extractor.extract(img)
                 feature_vec = json.dumps(feature.tolist())
 
+                # 人脸特征 (512维): 检测脸 + 5点对齐; 检不到脸则留空, 不阻断登记
+                if fused_pipeline is not None:
+                    try:
+                        fp = fused_pipeline.face_pipeline
+                        faces = fp.detector.detect(img)
+                        if faces:
+                            aligned = align_face(img, faces[0]['keypoints'])
+                            face_img = aligned if aligned is not None else faces[0]['crop']
+                            face_emb = fp.extractor.extract(face_img)
+                            face_vec = json.dumps(face_emb.tolist())
+                    except Exception as e:
+                        print(f"[WARN] 人脸特征提取失败(不阻断登记): {e}")
+
                 person_id = db.insert_person(name, id_card, room_num,
+                                            feature_vec=feature_vec,
+                                            face_vec=face_vec,
                                             face_img_path=face_path)
                 # 刷新特征库
                 reid_pipeline.feature_db.load_from_mysql()
+                if fused_pipeline is not None:
+                    fused_pipeline.face_pipeline.face_db.load_from_mysql()
 
                 return jsonify({
                     'success': True, 'message': '登记成功',
-                    'person_id': person_id, 'feature_extracted': True
+                    'person_id': person_id,
+                    'feature_extracted': True,
+                    'face_extracted': face_vec is not None
                 })
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
@@ -440,6 +474,8 @@ def api_delete_person(person_id):
     ok = db.delete_person(person_id) if db else False
     if ok:
         reid_pipeline.feature_db.load_from_mysql()
+        if fused_pipeline is not None:
+            fused_pipeline.face_pipeline.face_db.load_from_mysql()
     return jsonify({'success': ok})
 
 
@@ -452,14 +488,14 @@ def main():
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--model', default='Hotel_Exp/output/reid_train_log/best_reid.pt')
-    parser.add_argument('--yolo_model', default=None)
+    parser.add_argument('--model', default='saved_models/IBNet_V3_MOT17_Rank1-0987_mAP-0846_ep40.pth')
+    parser.add_argument('--yolo_model', default='saved_models/YOLOv8m_V6_HotelDet_mAP50-0822_deploy_ep30.pt')
     parser.add_argument('--video', default=None, help='测试视频路径')
     parser.add_argument('--rtsp', action='store_true', help='使用 RTSP 摄像头')
     parser.add_argument('--db_host', default='localhost')
     parser.add_argument('--db_port', type=int, default=3306)
     parser.add_argument('--db_user', default='root')
-    parser.add_argument('--db_password', default='root')
+    parser.add_argument('--db_password', default='123456')
     parser.add_argument('--db_name', default='hotel_security')
 
     args = parser.parse_args()

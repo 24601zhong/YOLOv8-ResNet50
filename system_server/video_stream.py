@@ -200,35 +200,19 @@ class YOLOPersonDetector:
         print(f"[INFO] YOLO 检测器初始化完成, 设备: {self.device}")
 
     def _load_model(self, model_path):
-        """加载 YOLO 模型"""
+        """加载 YOLO 模型 (ultralytics 格式, 直接 YOLO() 加载)"""
         try:
-            # 尝试加载自定义模型
+            from ultralytics import YOLO
             if model_path and Path(model_path).exists():
-                sys.path.insert(0, str(Path(__file__).parent.parent / 'yolov8_exp'))
-                from custom_modules import YOLOv8MixBiFPN
-
-                model = YOLOv8MixBiFPN(num_classes=1)
-                state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
-                if 'model_state_dict' in state_dict:
-                    state_dict = state_dict['model_state_dict']
-
-                # 兼容加载
-                model_dict = model.state_dict()
-                loaded = 0
-                for k, v in state_dict.items():
-                    if k in model_dict and v.shape == model_dict[k].shape:
-                        model_dict[k] = v
-                        loaded += 1
-                model.load_state_dict(model_dict)
-                print(f"[INFO] 加载改进 YOLOv8 权重: {model_path} ({loaded} 参数)")
-                self.model = model
+                self.model = YOLO(str(model_path))
+                print(f"[INFO] 加载 YOLO 检测模型: {model_path}")
             else:
-                # 使用 ultralytics 官方 YOLOv8
-                from ultralytics import YOLO
                 self.model = YOLO('yolov8n.pt')
                 print("[INFO] 使用原生 YOLOv8n 预训练模型")
+            self.model.to(self.device)
         except Exception as e:
-            print(f"[WARN] 自定义模型加载失败，使用 OpenCV DNN 替代: {e}")
+            print(f"[WARN] YOLO 模型加载失败: {e}")
+            self.model = None
             self._init_opencv_detector()
 
     def _init_opencv_detector(self):
@@ -253,29 +237,38 @@ class YOLOPersonDetector:
 
     def detect(self, frame):
         """
-        检测单帧中的行人
+        检测单帧中的行人 (ultralytics YOLO)
         :param frame: BGR 图像
         :return: 检测结果列表 [{bbox, confidence, class_id, roi}]
         """
         start_time = time.time()
         detections = []
-
         h, w = frame.shape[:2]
 
-        # 方法1: PyTorch 模型
-        if self.model is not None and hasattr(self.model, 'eval'):
+        # 方法1: ultralytics YOLO
+        if self.model is not None:
             try:
-                # 预处理
-                img = self._preprocess(frame)
-
-                # 推理
-                with torch.no_grad():
-                    outputs = self.model(img)
-
-                # 后处理
-                detections = self._postprocess(outputs, (h, w))
+                res = self.model.predict(
+                    frame, imgsz=self.imgsz, conf=self.conf_thres,
+                    iou=self.iou_thres, verbose=False)[0]
+                boxes = res.boxes
+                if boxes is not None:
+                    for b in boxes:
+                        if int(b.cls[0]) != 0:  # 仅保留 person 类
+                            continue
+                        x1, y1, x2, y2 = b.xyxy[0].tolist()
+                        x1, y1 = max(0.0, x1), max(0.0, y1)
+                        x2, y2 = min(float(w), x2), min(float(h), y2)
+                        if x2 - x1 < 10 or y2 - y1 < 20:
+                            continue
+                        detections.append({
+                            'bbox': [x1, y1, x2, y2],
+                            'confidence': float(b.conf[0]),
+                            'class_id': 0,
+                            'roi': frame[int(y1):int(y2), int(x1):int(x2)],
+                        })
             except Exception as e:
-                print(f"[WARN] PyTorch 推理异常: {e}")
+                print(f"[WARN] YOLO 推理异常: {e}")
                 detections = self._detect_fallback(frame)
 
         # 方法2: OpenCV DNN

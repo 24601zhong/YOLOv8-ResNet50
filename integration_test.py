@@ -169,7 +169,7 @@ class IntegrationTester:
         def test_db_interface():
             from system_server.db_mysql import HotelDatabase
 
-            db = HotelDatabase(host='localhost', port=3306, user='root', password='root', database='hotel_security')
+            db = HotelDatabase(host='localhost', port=3306, user='root', password='123456', database='hotel_security')
 
             required_methods = ['get_statistics', 'get_all_alerts', 'search_persons',
                                 'insert_person', 'insert_alert', 'update_alert_status',

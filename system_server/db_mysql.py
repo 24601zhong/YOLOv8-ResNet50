@@ -16,7 +16,7 @@ class HotelDatabase:
     """酒店安防数据库操作类"""
 
     def __init__(self, host='localhost', port=3306,
-                 user='root', password='root',
+                 user='root', password='123456',
                  database='hotel_security', charset='utf8mb4'):
         self.config = {
             'host': host,
@@ -25,7 +25,10 @@ class HotelDatabase:
             'password': password,
             'database': database,
             'charset': charset,
-            'cursorclass': pymysql.cursors.DictCursor
+            'cursorclass': pymysql.cursors.DictCursor,
+            # MySQL 8 默认 caching_sha2_password; 禁用 SSL 后用 RSA 交换(需 cryptography 包),
+            # 避免本地自签名证书导致的 ASN1 SSL 握手失败
+            'ssl_disabled': True
         }
         self._conn = None
 
@@ -49,6 +52,18 @@ class HotelDatabase:
             conn.rollback()
             raise e
 
+    def _execute_insert(self, sql, params=None):
+        """执行 INSERT 并返回自增主键 ID"""
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, params or ())
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            conn.rollback()
+            raise e
+
     # ========================================================
     # person_info 表操作
     # ========================================================
@@ -56,6 +71,7 @@ class HotelDatabase:
     def insert_person(self, name: str, id_card: str, room_num: str,
                       check_in_time: Optional[str] = None,
                       feature_vec: Optional[str] = None,
+                      face_vec: Optional[str] = None,
                       face_img_path: Optional[str] = None) -> int:
         """
         插入新住客信息
@@ -65,11 +81,11 @@ class HotelDatabase:
             check_in_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         sql = """
-        INSERT INTO person_info (name, id_card, room_num, check_in_time, feature_vec, face_img_path)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO person_info (name, id_card, room_num, check_in_time, feature_vec, face_vec, face_img_path)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """
-        params = (name, id_card, room_num, check_in_time, feature_vec, face_img_path)
-        return self._execute(sql, params, fetch=False)
+        params = (name, id_card, room_num, check_in_time, feature_vec, face_vec, face_img_path)
+        return self._execute_insert(sql, params)
 
     def get_person_by_id(self, person_id: int) -> Optional[Dict]:
         """根据ID查询住客"""
@@ -91,7 +107,7 @@ class HotelDatabase:
     def update_person(self, person_id: int, **kwargs) -> bool:
         """更新住客信息"""
         allowed_fields = {'name', 'id_card', 'room_num', 'check_in_time',
-                          'check_out_time', 'feature_vec', 'face_img_path'}
+                          'check_out_time', 'feature_vec', 'face_vec', 'face_img_path'}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:
@@ -123,6 +139,11 @@ class HotelDatabase:
         sql = "UPDATE person_info SET feature_vec = %s WHERE id = %s"
         return self._execute(sql, (feature_vec, person_id), fetch=False) > 0
 
+    def update_face_vec(self, person_id: int, face_vec: str) -> bool:
+        """更新人脸特征向量 (512维)"""
+        sql = "UPDATE person_info SET face_vec = %s WHERE id = %s"
+        return self._execute(sql, (face_vec, person_id), fetch=False) > 0
+
     # ========================================================
     # alert_log 表操作
     # ========================================================
@@ -137,7 +158,7 @@ class HotelDatabase:
         INSERT INTO alert_log (alert_time, camera_id, screenshot_path, similarity, handle_status)
         VALUES (NOW(), %s, %s, %s, %s)
         """
-        return self._execute(sql, (camera_id, screenshot_path, similarity, handle_status), fetch=False)
+        return self._execute_insert(sql, (camera_id, screenshot_path, similarity, handle_status))
 
     def get_alert_by_id(self, log_id: int) -> Optional[Dict]:
         """根据ID查询预警"""
